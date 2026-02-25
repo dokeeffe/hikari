@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hikari – Photometry Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --accent: #58a6ff;
+      --success: #3fb950;
+      --fail: #f85149;
+      --warn: #e3b341;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --font: 'Segoe UI', system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    header h1 { font-size: 1.3rem; color: var(--accent); }
+    header span { color: var(--muted); font-size: 0.85rem; }
+
+    main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+    .grid { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .panel-body { padding: 0; }
+
+    /* Job list */
+    .job-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .job-item:last-child { border-bottom: none; }
+    .job-item:hover, .job-item.active { background: #21262d; }
+    .job-item .object { font-weight: 600; margin-bottom: 2px; }
+    .job-item .meta { font-size: 0.8rem; color: var(--muted); display: flex; gap: 10px; }
+
+    /* Badge */
+    .badge {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 12px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .badge-success { background: #1a3a23; color: var(--success); }
+    .badge-fail { background: #3a1a1a; color: var(--fail); }
+    .badge-pending { background: #2a2a1a; color: var(--warn); }
+    .badge-processing { background: #1a2a3a; color: var(--accent); }
+
+    /* Observations table */
+    .obs-table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    th {
+      text-align: left; padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.7rem;
+      letter-spacing: 0.05em;
+      position: sticky; top: 0;
+      background: var(--surface);
+    }
+    td { padding: 8px 12px; border-bottom: 1px solid #21262d; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr.rejected td { opacity: 0.45; text-decoration: line-through; }
+    tr:hover td { background: #21262d22; }
+
+    .mag { font-family: monospace; }
+    .rms-good { color: var(--success); }
+    .rms-warn { color: var(--warn); }
+    .rms-bad  { color: var(--fail); }
+
+    button {
+      cursor: pointer;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      background: transparent;
+      color: var(--text);
+      transition: background 0.15s;
+    }
+    button:hover { background: #21262d; }
+    button.danger { border-color: var(--fail); color: var(--fail); }
+    button.primary { border-color: var(--accent); color: var(--accent); }
+    button.sm { padding: 2px 8px; font-size: 0.72rem; }
+
+    .toolbar {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .toolbar .info { margin-left: auto; color: var(--muted); font-size: 0.8rem; }
+
+    #detail-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    #detail-header h2 { font-size: 1.05rem; }
+    #detail-header .sub { color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
+
+    .empty { padding: 40px; text-align: center; color: var(--muted); }
+
+    .spinner { display: inline-block; width: 14px; height: 14px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px 18px;
+      font-size: 0.85rem; display: none; z-index: 999;
+      box-shadow: 0 4px 20px #0005;
+    }
+
+    tr.obs-selected td { background: #1c2b3a !important; }
+    tr.obs-clickable { cursor: pointer; }
+
+    #viz-panel {
+      display: none;
+      border-top: 1px solid var(--border);
+      padding: 16px;
+    }
+    #viz-panel .viz-filename {
+      font-size: 0.8rem; color: var(--muted); margin-bottom: 12px;
+    }
+    .viz-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .viz-card {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+    }
+    .viz-card h4 {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    #cutout-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 120px;
+    }
+    #cutout-img { max-width: 120px; max-height: 120px; image-rendering: pixelated; }
+    #cutout-placeholder { color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⭐ Hikari</h1>
+  <span>Variable Star Photometry Dashboard</span>
+</header>
+
+<main>
+  <div class="grid">
+    <!-- Left: job list -->
+    <div class="panel">
+      <div class="panel-header">
+        Batch Jobs
+        <button class="sm" onclick="loadJobs()" style="margin-left:auto">Refresh</button>
+        <button class="sm danger" onclick="clearAllData()">Clear All</button>
+      </div>
+      <div class="panel-body" id="job-list">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Right: detail panel -->
+    <div class="panel" id="detail-panel">
+      <div class="empty" style="padding:60px">Select a job to view observations</div>
+    </div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+  let currentJobId = null;
+  let currentObs = [];
+  let ensembleChart = null;
+
+  // -------------------------------------------------------------------------
+  // API helpers
+  // -------------------------------------------------------------------------
+  async function api(url, opts = {}) {
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return r.json();
+  }
+
+  function toast(msg, err = false) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.display = 'block';
+    el.style.borderColor = err ? 'var(--fail)' : 'var(--success)';
+    setTimeout(() => { el.style.display = 'none'; }, 3000);
+  }
+
+  // -------------------------------------------------------------------------
+  // Job list
+  // -------------------------------------------------------------------------
+  async function loadJobs() {
+    const el = document.getElementById('job-list');
+    el.innerHTML = '<div class="empty"><span class="spinner"></span></div>';
+    try {
+      const jobs = await api('/api/jobs?limit=50');
+      if (!jobs.length) { el.innerHTML = '<div class="empty">No jobs yet.</div>'; return; }
+      el.innerHTML = jobs.map(j => jobItem(j)).join('');
+      if (currentJobId) {
+        document.querySelector(`.job-item[data-id="${currentJobId}"]`)?.classList.add('active');
+      }
+    } catch(e) {
+      el.innerHTML = `<div class="empty" style="color:var(--fail)">${e.message}</div>`;
+    }
+  }
+
+  function badgeClass(status) {
+    return { success:'badge-success', failed:'badge-fail', pending:'badge-pending', processing:'badge-processing' }[status] || 'badge-pending';
+  }
+
+  function jobItem(j) {
+    const dt = new Date(j.created_at).toLocaleString();
+    return `<div class="job-item" data-id="${j.id}" onclick="selectJob(${j.id})">
+      <div class="object">${esc(j.object_name)} &nbsp;
+        <span class="badge ${badgeClass(j.status)}">${j.status}</span>
+        <span class="badge" style="background:#222;color:var(--muted)">${esc(j.filter)}</span>
+      </div>
+      <div class="meta">
+        <span>${dt}</span>
+        <span>${j.n_observations} obs</span>
+        ${j.n_failed ? `<span style="color:var(--fail)">${j.n_failed} failed</span>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Observation detail
+  // -------------------------------------------------------------------------
+  async function selectJob(jobId) {
+    currentJobId = jobId;
+    document.querySelectorAll('.job-item').forEach(el => el.classList.remove('active'));
+    document.querySelector(`.job-item[data-id="${jobId}"]`)?.classList.add('active');
+
+    const panel = document.getElementById('detail-panel');
+    panel.innerHTML = '<div class="empty"><span class="spinner"></span></div>';
+
+    try {
+      const [job, obs] = await Promise.all([
+        api(`/api/jobs/${jobId}`),
+        api(`/api/jobs/${jobId}/observations`),
+      ]);
+      renderDetail(job, obs);
+    } catch(e) {
+      panel.innerHTML = `<div class="empty" style="color:var(--fail)">${e.message}</div>`;
+    }
+  }
+
+  function renderDetail(job, obs) {
+    currentObs = obs;
+    const panel = document.getElementById('detail-panel');
+    const dt = new Date(job.created_at).toLocaleString();
+    const chart = job.chart_id ? `Chart: <strong>${esc(job.chart_id)}</strong>` : '';
+
+    const rows = obs.map(o => obsRow(o, job.object_name)).join('');
+
+    panel.innerHTML = `
+      <div id="detail-header">
+        <h2>${esc(job.object_name)} &nbsp;
+          <span class="badge ${badgeClass(job.status)}">${job.status}</span>
+          <span class="badge" style="background:#222;color:var(--muted)">${esc(job.filter)}</span>
+        </h2>
+        <div class="sub">${dt} &nbsp;|&nbsp; ${chart}</div>
+      </div>
+      <div class="toolbar">
+        <button class="primary" onclick="downloadCsv(${job.id})">Download AAVSO CSV</button>
+        <span class="info">${obs.length} observations (${obs.filter(o=>o.rejected).length} rejected)</span>
+      </div>
+      <div class="obs-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>JD</th>
+              <th>Mag</th>
+              <th>±Err</th>
+              <th>RMS fit</th>
+              <th>N ens</th>
+              <th>Airmass</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="obs-tbody">${rows || '<tr><td colspan="9" class="empty">No observations</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div id="viz-panel">
+        <div class="viz-filename" id="viz-filename"></div>
+        <div class="viz-grid">
+          <div class="viz-card">
+            <h4>Ensemble Fit</h4>
+            <canvas id="ensemble-chart" height="220"></canvas>
+          </div>
+          <div class="viz-card">
+            <h4>Target Cutout</h4>
+            <div id="cutout-wrap">
+              <span id="cutout-placeholder" class="muted">Click a row to load</span>
+              <img id="cutout-img" style="display:none" alt="target cutout" />
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    // Make rows clickable
+    document.querySelectorAll('tr.obs-clickable').forEach(tr => {
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        const obsId = parseInt(tr.dataset.obsId);
+        const o = currentObs.find(x => x.id === obsId);
+        if (o) selectObsRow(o);
+      });
+    });
+  }
+
+  function rmsClass(rms) {
+    if (rms === null || rms === undefined) return '';
+    if (rms < 0.03) return 'rms-good';
+    if (rms < 0.07) return 'rms-warn';
+    return 'rms-bad';
+  }
+
+  function obsRow(o, starName) {
+    const rejected = o.rejected;
+    const mag = o.magnitude != null ? o.magnitude.toFixed(3) : '—';
+    const err = o.magnitude_error != null ? o.magnitude_error.toFixed(3) : '—';
+    const rms = o.fit_rms != null ? o.fit_rms.toFixed(4) : '—';
+    const rmsColor = o.fit_rms != null ? rmsClass(o.fit_rms) : '';
+    const am = o.airmass != null ? o.airmass.toFixed(2) : '—';
+    const jd = o.julian_date ? o.julian_date.toFixed(5) : '—';
+    const badge = o.status === 'success'
+      ? `<span class="badge badge-success">ok</span>`
+      : `<span class="badge badge-fail">${esc(o.status)}</span>`;
+    const rejectBtn = rejected
+      ? `<button class="sm primary" onclick="acceptObs(${o.id})">Accept</button>`
+      : `<button class="sm danger" onclick="rejectObs(${o.id})">Reject</button>`;
+
+    return `<tr class="${rejected ? 'rejected' : ''} obs-clickable" id="obs-${o.id}" data-obs-id="${o.id}">
+      <td title="${esc(o.file_name)}">${esc(shortName(o.file_name))}</td>
+      <td class="mag">${jd}</td>
+      <td class="mag">${mag}</td>
+      <td class="mag">${err}</td>
+      <td class="mag ${rmsColor}">${rms}</td>
+      <td>${o.n_ensemble_stars ?? '—'}</td>
+      <td>${am}</td>
+      <td>${badge}</td>
+      <td>${rejectBtn}</td>
+    </tr>`;
+  }
+
+  function shortName(path) {
+    return path ? path.split('/').pop().split('\\').pop() : '';
+  }
+
+  // -------------------------------------------------------------------------
+  // Actions
+  // -------------------------------------------------------------------------
+  async function rejectObs(id) {
+    const reason = prompt('Rejection reason (optional):') ?? '';
+    try {
+      await api(`/api/observations/${id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      toast('Observation rejected');
+      selectJob(currentJobId);
+    } catch(e) { toast(e.message, true); }
+  }
+
+  async function acceptObs(id) {
+    try {
+      await api(`/api/observations/${id}/accept`, { method: 'POST' });
+      toast('Observation accepted');
+      selectJob(currentJobId);
+    } catch(e) { toast(e.message, true); }
+  }
+
+  async function clearAllData() {
+    if (!confirm('Delete ALL jobs and observations? This cannot be undone.')) return;
+    try {
+      const result = await api('/api/data', { method: 'DELETE' });
+      toast(`Cleared ${result.jobs_deleted} job(s)`);
+      currentJobId = null;
+      document.getElementById('detail-panel').innerHTML =
+        '<div class="empty" style="padding:60px">Select a job to view observations</div>';
+      loadJobs();
+    } catch(e) { toast(e.message, true); }
+  }
+
+  async function downloadCsv(jobId) {
+    const r = await fetch(`/api/jobs/${jobId}/aavso-csv`);
+    if (!r.ok) { toast('Failed to generate CSV', true); return; }
+    const text = await r.text();
+    const blob = new Blob([text], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `AAVSO-job-${jobId}.csv`;
+    a.click();
+  }
+
+  // -------------------------------------------------------------------------
+  // Viz panel
+  // -------------------------------------------------------------------------
+  function selectObsRow(o) {
+    // Highlight selected row
+    document.querySelectorAll('tr.obs-clickable').forEach(tr => tr.classList.remove('obs-selected'));
+    const tr = document.getElementById(`obs-${o.id}`);
+    if (tr) tr.classList.add('obs-selected');
+
+    const vizPanel = document.getElementById('viz-panel');
+    vizPanel.style.display = 'block';
+    document.getElementById('viz-filename').textContent = shortName(o.file_name);
+
+    renderEnsembleChart(o);
+    renderCutout(o);
+  }
+
+  function renderEnsembleChart(o) {
+    if (ensembleChart) { ensembleChart.destroy(); ensembleChart = null; }
+    const canvas = document.getElementById('ensemble-chart');
+    const extra = o.extra || {};
+    const points = extra.ensemble_points || [];
+    const targetInstMag = extra.target_instrumental_mag;
+
+    if (!points.length) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#8b949e';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No ensemble data', canvas.width / 2, canvas.height / 2);
+      return;
+    }
+
+    const compData = points.map(p => ({ x: p.instrumental_mag, y: p.published_mag }));
+
+    // Fit line from slope/intercept
+    const xVals = points.map(p => p.instrumental_mag);
+    const xMin = Math.min(...xVals) - 0.2;
+    const xMax = Math.max(...xVals) + 0.2;
+    const fitData = [];
+    if (o.fit_slope != null && o.fit_intercept != null) {
+      fitData.push({ x: xMin, y: o.fit_slope * xMin + o.fit_intercept });
+      fitData.push({ x: xMax, y: o.fit_slope * xMax + o.fit_intercept });
+    }
+
+    // Target point
+    const targetData = [];
+    if (targetInstMag != null && o.magnitude != null) {
+      targetData.push({ x: targetInstMag, y: o.magnitude });
+    }
+
+    ensembleChart = new Chart(canvas, {
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'Comp stars',
+            data: compData,
+            backgroundColor: '#58a6ff',
+            pointRadius: 5,
+          },
+          {
+            label: 'Target',
+            data: targetData,
+            backgroundColor: '#f85149',
+            pointStyle: 'triangle',
+            pointRadius: 8,
+          },
+          {
+            label: 'Fit',
+            data: fitData,
+            type: 'line',
+            borderColor: '#8b949e',
+            borderDash: [5, 3],
+            borderWidth: 1.5,
+            pointRadius: 0,
+            showLine: true,
+          },
+        ],
+      },
+      options: {
+        animation: false,
+        plugins: { legend: { labels: { color: '#c9d1d9', font: { size: 11 } } } },
+        scales: {
+          x: {
+            title: { display: true, text: 'Instrumental mag', color: '#8b949e', font: { size: 11 } },
+            ticks: { color: '#8b949e' },
+            grid: { color: '#30363d' },
+          },
+          y: {
+            title: { display: true, text: 'Published mag', color: '#8b949e', font: { size: 11 } },
+            ticks: { color: '#8b949e' },
+            grid: { color: '#30363d' },
+            reverse: true,
+          },
+        },
+      },
+    });
+  }
+
+  function renderCutout(o) {
+    const img = document.getElementById('cutout-img');
+    const placeholder = document.getElementById('cutout-placeholder');
+    img.style.display = 'none';
+    placeholder.textContent = 'Loading…';
+    placeholder.style.display = 'block';
+
+    const src = `/api/observations/${o.id}/cutout`;
+    img.onload = () => { img.style.display = 'block'; placeholder.style.display = 'none'; };
+    img.onerror = () => { placeholder.textContent = 'No cutout available'; };
+    img.src = src;
+  }
+
+  // -------------------------------------------------------------------------
+  // Utility
+  // -------------------------------------------------------------------------
+  function esc(s) {
+    return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // -------------------------------------------------------------------------
+  // Init
+  // -------------------------------------------------------------------------
+  loadJobs();
+  setInterval(loadJobs, 30000);  // auto-refresh every 30s
+</script>
+</body>
+</html>

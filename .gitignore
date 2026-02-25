@@ -1,0 +1,54 @@
+# User config (generated on first run, contains personal preferences)
+hikari.toml
+
+# Local test data (not part of the project)
+testdata/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build & distribution
+dist/
+build/
+*.egg-info/
+*.egg
+
+# uv
+.uv/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Type checking
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
