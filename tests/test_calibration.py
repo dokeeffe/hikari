@@ -158,3 +158,72 @@ class TestRunCalibration:
         assert abs(cal.magnitude - 18.0) < 0.5
         assert cal.filter == PhotometricFilter.V
         assert cal.julian_date == 2460000.0
+
+    def test_check_star_is_brightness_matched(self):
+        """Check star should be the non-ensemble star closest to the target in instrumental mag."""
+        # Target at instr mag 10.0
+        # 5 ensemble stars (closest): c1=10.2, c2=9.5, c3=10.8, c4=11.5, c5=8.0
+        # 2 non-ensemble remainders: c6=6.5 (closer) and c7=5.0 (farther)
+        # The check star should be c6 (closest non-ensemble to target)
+        target = _aperture("target", 10.0)
+        comp_results = [
+            _aperture("c1", 10.2),  # ensemble
+            _aperture("c2", 9.5),   # ensemble
+            _aperture("c3", 10.8),  # ensemble
+            _aperture("c4", 11.5),  # ensemble
+            _aperture("c5", 8.0),   # ensemble
+            _aperture("c6", 6.5),   # non-ensemble, closer to target
+            _aperture("c7", 5.0),   # non-ensemble, farther from target
+        ]
+        comp_stars = [
+            _star("c1", 20.2),
+            _star("c2", 19.5),
+            _star("c3", 20.8),
+            _star("c4", 21.5),
+            _star("c5", 18.0),
+            _star("c6", 16.5),
+            _star("c7", 15.0),
+        ]
+        meta = _fits_meta()
+
+        cal, fit, ens_results, ens_stars = run_calibration(
+            comp_results=comp_results,
+            comp_stars=comp_stars,
+            target_result=target,
+            fits_meta=meta,
+            ensemble_size=5,
+        )
+        # c6 (instr=6.5, dist=3.5) is closer to target than c7 (instr=5.0, dist=5.0)
+        assert cal.check_star_auid == "c6"
+        assert cal.check_star_published_magnitude == 16.5
+
+    def test_check_star_sacrifice_when_no_non_ensemble(self):
+        """When all valid comp stars are in the ensemble, sacrifice one for the check role."""
+        # Only 4 comp stars, ensemble_size=5 → all 4 go into ensemble by default
+        # With sacrifice: ensemble shrinks to 3, check star = the closest one (ensemble[0])
+        target = _aperture("target", 5.0)
+        comp_results = [
+            _aperture("c1", 5.1),
+            _aperture("c2", 5.3),
+            _aperture("c3", 6.0),
+            _aperture("c4", 7.0),
+        ]
+        comp_stars = [
+            _star("c1", 15.1),
+            _star("c2", 15.3),
+            _star("c3", 16.0),
+            _star("c4", 17.0),
+        ]
+        meta = _fits_meta()
+
+        cal, fit, ens_results, ens_stars = run_calibration(
+            comp_results=comp_results,
+            comp_stars=comp_stars,
+            target_result=target,
+            fits_meta=meta,
+            ensemble_size=5,
+        )
+        # A check star should have been sacrificed from the ensemble
+        assert cal.check_star_auid is not None
+        # Ensemble should have 3 stars (4 total - 1 sacrificed)
+        assert len(ens_results) == 3

@@ -19,7 +19,8 @@
       --font: 'Segoe UI', system-ui, sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+    html, body { height: 100%; overflow: hidden; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; display: flex; flex-direction: column; }
 
     header {
       background: var(--surface);
@@ -28,14 +29,39 @@
       display: flex;
       align-items: center;
       gap: 16px;
+      flex-shrink: 0;
     }
     header h1 { font-size: 1.3rem; color: var(--accent); }
     header span { color: var(--muted); font-size: 0.85rem; }
 
-    main { max-width: 1400px; margin: 0 auto; padding: 24px; }
+    /* 3-column layout filling remaining viewport height */
+    main {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 380px 1fr 380px;
+      gap: 10px;
+      padding: 10px;
+      overflow: hidden;
+    }
 
-    .grid { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
+    /* ── Column wrappers ── */
+    .col-jobs {
+      min-height: 0;
+      overflow-y: auto;
+    }
+    .col-obs {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .col-viz {
+      min-height: 0;
+      overflow-y: auto;
+    }
 
+    /* ── Generic panel ── */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -53,10 +79,11 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      flex-shrink: 0;
     }
     .panel-body { padding: 0; }
 
-    /* Job list */
+    /* ── Job list ── */
     .job-item {
       padding: 12px 16px;
       border-bottom: 1px solid var(--border);
@@ -68,7 +95,7 @@
     .job-item .object { font-weight: 600; margin-bottom: 2px; }
     .job-item .meta { font-size: 0.8rem; color: var(--muted); display: flex; gap: 10px; }
 
-    /* Badge */
+    /* ── Badge ── */
     .badge {
       display: inline-block;
       padding: 1px 7px;
@@ -77,12 +104,43 @@
       font-weight: 600;
     }
     .badge-success { background: #1a3a23; color: var(--success); }
-    .badge-fail { background: #3a1a1a; color: var(--fail); }
+    .badge-fail    { background: #3a1a1a; color: var(--fail); }
     .badge-pending { background: #2a2a1a; color: var(--warn); }
     .badge-processing { background: #1a2a3a; color: var(--accent); }
 
-    /* Observations table */
-    .obs-table-wrap { overflow-x: auto; }
+    /* ── Detail panel (obs column) ── */
+    #detail-panel {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #detail-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #detail-header h2 { font-size: 1.05rem; }
+    #detail-header .sub { color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
+
+    .toolbar {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+    .toolbar .info { margin-left: auto; color: var(--muted); font-size: 0.8rem; }
+
+    /* ── Observations table ── */
+    .obs-table-wrap {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
     th {
       text-align: left; padding: 8px 12px;
@@ -94,6 +152,7 @@
       letter-spacing: 0.05em;
       position: sticky; top: 0;
       background: var(--surface);
+      z-index: 1;
     }
     td { padding: 8px 12px; border-bottom: 1px solid #21262d; vertical-align: middle; }
     tr:last-child td { border-bottom: none; }
@@ -120,23 +179,6 @@
     button.primary { border-color: var(--accent); color: var(--accent); }
     button.sm { padding: 2px 8px; font-size: 0.72rem; }
 
-    .toolbar {
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .toolbar .info { margin-left: auto; color: var(--muted); font-size: 0.8rem; }
-
-    #detail-header {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--border);
-    }
-    #detail-header h2 { font-size: 1.05rem; }
-    #detail-header .sub { color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
-
     .empty { padding: 40px; text-align: center; color: var(--muted); }
 
     .spinner { display: inline-block; width: 14px; height: 14px;
@@ -155,18 +197,43 @@
     tr.obs-selected td { background: #1c2b3a !important; }
     tr.obs-clickable { cursor: pointer; }
 
+    /* ── Viz panel (right column, always present) ── */
     #viz-panel {
-      display: none;
-      border-top: 1px solid var(--border);
-      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
     }
-    #viz-panel .viz-filename {
-      font-size: 0.8rem; color: var(--muted); margin-bottom: 12px;
+    #viz-panel-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
     }
-    .viz-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
+    #viz-filename {
+      font-size: 0.8rem;
+      color: var(--muted);
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      min-height: 33px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #viz-empty {
+      padding: 60px 20px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .viz-cards {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
     .viz-card {
       background: #0d1117;
@@ -187,7 +254,7 @@
       justify-content: center;
       min-height: 120px;
     }
-    #cutout-img { max-width: 120px; max-height: 120px; image-rendering: pixelated; }
+    #cutout-img { max-width: 100%; image-rendering: pixelated; }
     #cutout-placeholder { color: var(--muted); font-size: 0.8rem; }
   </style>
 </head>
@@ -199,22 +266,47 @@
 </header>
 
 <main>
-  <div class="grid">
-    <!-- Left: job list -->
+  <!-- Column 1: Job list -->
+  <div class="col-jobs">
     <div class="panel">
       <div class="panel-header">
         Batch Jobs
         <button class="sm" onclick="loadJobs()" style="margin-left:auto">Refresh</button>
+        <button class="sm" onclick="clearCache()">Clear Cache</button>
         <button class="sm danger" onclick="clearAllData()">Clear All</button>
       </div>
       <div class="panel-body" id="job-list">
         <div class="empty">Loading…</div>
       </div>
     </div>
+  </div>
 
-    <!-- Right: detail panel -->
+  <!-- Column 2: Observations table -->
+  <div class="col-obs">
     <div class="panel" id="detail-panel">
       <div class="empty" style="padding:60px">Select a job to view observations</div>
+    </div>
+  </div>
+
+  <!-- Column 3: Viz (always present) -->
+  <div class="col-viz">
+    <div id="viz-panel">
+      <div id="viz-panel-header">Detail</div>
+      <div id="viz-filename"></div>
+      <div id="viz-empty">Click a row to see the ensemble fit and target cutout</div>
+      <div id="viz-cards" class="viz-cards" style="display:none">
+        <div class="viz-card">
+          <h4>Ensemble Fit</h4>
+          <canvas id="ensemble-chart" height="220"></canvas>
+        </div>
+        <div class="viz-card">
+          <h4>Target Cutout</h4>
+          <div id="cutout-wrap">
+            <span id="cutout-placeholder" class="muted">Loading…</span>
+            <img id="cutout-img" style="display:none" alt="target cutout" />
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </main>
@@ -290,6 +382,7 @@
 
     const panel = document.getElementById('detail-panel');
     panel.innerHTML = '<div class="empty"><span class="spinner"></span></div>';
+    resetVizPanel();
 
     try {
       const [job, obs] = await Promise.all([
@@ -300,6 +393,13 @@
     } catch(e) {
       panel.innerHTML = `<div class="empty" style="color:var(--fail)">${e.message}</div>`;
     }
+  }
+
+  function resetVizPanel() {
+    if (ensembleChart) { ensembleChart.destroy(); ensembleChart = null; }
+    document.getElementById('viz-filename').textContent = '';
+    document.getElementById('viz-empty').style.display = 'block';
+    document.getElementById('viz-cards').style.display = 'none';
   }
 
   function renderDetail(job, obs) {
@@ -332,29 +432,14 @@
               <th>±Err</th>
               <th>RMS fit</th>
               <th>N ens</th>
+              <th>Chk Star</th>
               <th>Airmass</th>
               <th>Status</th>
               <th></th>
             </tr>
           </thead>
-          <tbody id="obs-tbody">${rows || '<tr><td colspan="9" class="empty">No observations</td></tr>'}</tbody>
+          <tbody id="obs-tbody">${rows || '<tr><td colspan="10" class="empty">No observations</td></tr>'}</tbody>
         </table>
-      </div>
-      <div id="viz-panel">
-        <div class="viz-filename" id="viz-filename"></div>
-        <div class="viz-grid">
-          <div class="viz-card">
-            <h4>Ensemble Fit</h4>
-            <canvas id="ensemble-chart" height="220"></canvas>
-          </div>
-          <div class="viz-card">
-            <h4>Target Cutout</h4>
-            <div id="cutout-wrap">
-              <span id="cutout-placeholder" class="muted">Click a row to load</span>
-              <img id="cutout-img" style="display:none" alt="target cutout" />
-            </div>
-          </div>
-        </div>
       </div>`;
 
     // Make rows clickable
@@ -390,6 +475,19 @@
       ? `<button class="sm primary" onclick="acceptObs(${o.id})">Accept</button>`
       : `<button class="sm danger" onclick="rejectObs(${o.id})">Reject</button>`;
 
+    let chkCell;
+    if (!o.check_star_auid) {
+      chkCell = '<td>—</td>';
+    } else {
+      const shortAuid = o.check_star_auid.split('-').pop();
+      const pub = o.check_star_published_magnitude != null ? o.check_star_published_magnitude.toFixed(3) : '?';
+      const cal = o.check_star_magnitude != null ? o.check_star_magnitude.toFixed(3) : '?';
+      const delta = (o.check_star_published_magnitude != null && o.check_star_magnitude != null)
+        ? Math.abs(o.check_star_magnitude - o.check_star_published_magnitude).toFixed(3)
+        : '?';
+      chkCell = `<td title="${esc(o.check_star_auid)} | pub=${pub} cal=${cal} Δ=${delta}">${esc(shortAuid)}</td>`;
+    }
+
     return `<tr class="${rejected ? 'rejected' : ''} obs-clickable" id="obs-${o.id}" data-obs-id="${o.id}">
       <td title="${esc(o.file_name)}">${esc(shortName(o.file_name))}</td>
       <td class="mag">${jd}</td>
@@ -397,6 +495,7 @@
       <td class="mag">${err}</td>
       <td class="mag ${rmsColor}">${rms}</td>
       <td>${o.n_ensemble_stars ?? '—'}</td>
+      ${chkCell}
       <td>${am}</td>
       <td>${badge}</td>
       <td>${rejectBtn}</td>
@@ -431,6 +530,14 @@
     } catch(e) { toast(e.message, true); }
   }
 
+  async function clearCache() {
+    if (!confirm('Delete all cached API responses (star positions, comparison star lists)? The next run will re-fetch from AAVSO.')) return;
+    try {
+      const result = await api('/api/cache', { method: 'DELETE' });
+      toast(`Cache cleared (${result.entries_deleted} entries)`);
+    } catch(e) { toast(e.message, true); }
+  }
+
   async function clearAllData() {
     if (!confirm('Delete ALL jobs and observations? This cannot be undone.')) return;
     try {
@@ -439,6 +546,7 @@
       currentJobId = null;
       document.getElementById('detail-panel').innerHTML =
         '<div class="empty" style="padding:60px">Select a job to view observations</div>';
+      resetVizPanel();
       loadJobs();
     } catch(e) { toast(e.message, true); }
   }
@@ -463,8 +571,9 @@
     const tr = document.getElementById(`obs-${o.id}`);
     if (tr) tr.classList.add('obs-selected');
 
-    const vizPanel = document.getElementById('viz-panel');
-    vizPanel.style.display = 'block';
+    // Show viz cards, hide empty state
+    document.getElementById('viz-empty').style.display = 'none';
+    document.getElementById('viz-cards').style.display = 'flex';
     document.getElementById('viz-filename').textContent = shortName(o.file_name);
 
     renderEnsembleChart(o);

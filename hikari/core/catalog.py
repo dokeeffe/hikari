@@ -144,7 +144,7 @@ def download_comparison_stars(
             "ra": ra,
             "dec": dec,
         }
-        logger.info("Querying AAVSO VSP API (RA={}, DEC={}, filter={})", ra, dec, filter_band)
+        logger.info("Querying AAVSO VSP API {} params {}", VSP_BASE_URL, params)
         try:
             resp = httpx.get(VSP_BASE_URL, params=params, timeout=30.0, follow_redirects=True)
             resp.raise_for_status()
@@ -153,11 +153,11 @@ def download_comparison_stars(
             raise RuntimeError(f"AAVSO VSP API request failed: {exc}") from exc
 
         _cache_set(effective_cache, cache_key, raw_chart)
-
     chart_id = raw_chart.get("chartid", "unknown")
     comp_stars: list[ComparisonStar] = []
 
     for star in raw_chart.get("photometry", []):
+        logger.debug("Checking star {} from chart", star)
         auid = star.get("auid", "")
         if auid in excluded:
             continue

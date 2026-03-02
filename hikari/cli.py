@@ -422,6 +422,7 @@ def _save_results(
                         "n_ensemble_stars": cal.calibration_fit.n_stars,
                         "check_star_auid": cal.check_star_auid,
                         "check_star_magnitude": cal.check_star_magnitude,
+                        "check_star_published_magnitude": cal.check_star_published_magnitude,
                         "status": "success",
                         "extra": extra or None,
                     },
@@ -453,20 +454,8 @@ def _save_results(
         if fr.calibrated_magnitude
     ]
 
-    # Lightcurve
-    from hikari.output.plots import plot_lightcurve
-    lc_path = settings.output_dir / f"lightcurve_{result.object_name.replace(' ', '_')}.png"
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    plot_lightcurve(
-        calibrated_mags=result.calibrated_magnitudes,
-        output_path=lc_path,
-        star_name=result.object_name,
-        filter_label=result.filter,
-    )
-
     # Summary
     rprint(f"\n[bold green]✓ {len(result.successful)}/{len(result.file_results)} files succeeded[/bold green]")
-    rprint(f"  Lightcurve → [cyan]{lc_path}[/cyan]")
     _print_failures(result)
 
     # Print magnitude table

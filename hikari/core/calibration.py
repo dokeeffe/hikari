@@ -173,13 +173,21 @@ def calibrate_target(
 
     ck_auid: Optional[str] = None
     ck_mag: Optional[float] = None
+    ck_pub_mag: Optional[float] = None
     if check_star_result and check_star:
         if check_star_result.instrumental_magnitude is not None:
             ck_cal_mag = (
                 fit.slope * check_star_result.instrumental_magnitude + fit.intercept
             )
+            logger.debug(
+                "Check star {}: published_mag={}, cal_mag={:.4f}",
+                check_star.auid,
+                check_star.published_magnitude,
+                ck_cal_mag,
+            )
             if check_star.published_magnitude is not None:
                 mag_error = abs(ck_cal_mag - check_star.published_magnitude)
+                ck_pub_mag = check_star.published_magnitude
             ck_auid = check_star.auid
             ck_mag = ck_cal_mag
 
@@ -200,6 +208,7 @@ def calibrate_target(
         calibration_fit=fit,
         check_star_auid=ck_auid,
         check_star_magnitude=ck_mag,
+        check_star_published_magnitude=ck_pub_mag,
     )
 
 
@@ -222,15 +231,29 @@ def run_calibration(
         comp_results, comp_stars, target_result, ensemble_size=ensemble_size
     )
 
-    # Pick a check star from the remaining comp stars not in the ensemble
+    # Pick a check star: best brightness-matched non-ensemble candidate
+    target_mag = target_result.instrumental_magnitude  # already checked non-None above
     ensemble_auids = {r.auid for r in ensemble_results}
-    check_pairs = [
-        (r, s)
-        for r, s in zip(comp_results, comp_stars)
-        if r.auid not in ensemble_auids and r.instrumental_magnitude is not None
-    ]
-    check_result: Optional[ApertureResult] = check_pairs[0][0] if check_pairs else None
-    check_star: Optional[MatchedStar] = check_pairs[0][1] if check_pairs else None
+    check_pairs = sorted(
+        [
+            (r, s)
+            for r, s in zip(comp_results, comp_stars)
+            if r.auid not in ensemble_auids and r.instrumental_magnitude is not None
+        ],
+        key=lambda pair: abs((pair[0].instrumental_magnitude or 0.0) - target_mag),
+    )
+
+    check_result: Optional[ApertureResult] = None
+    check_star: Optional[MatchedStar] = None
+
+    if check_pairs:
+        check_result, check_star = check_pairs[0]
+    elif len(ensemble_results) > 2:
+        # Sacrifice the brightness-closest ensemble star for the check role
+        check_result, check_star = ensemble_results[0], ensemble_stars[0]
+        ensemble_results = ensemble_results[1:]
+        ensemble_stars = ensemble_stars[1:]
+        logger.debug("No non-ensemble check star available; sacrificed ensemble[0] as check star")
 
     fit = fit_ensemble(ensemble_results, ensemble_stars)
     cal = calibrate_target(

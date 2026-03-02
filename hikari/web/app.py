@@ -7,6 +7,7 @@ enabling monitoring of batch jobs and browsing observation history.
 from __future__ import annotations
 
 import datetime
+import shutil
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -42,11 +43,15 @@ from hikari.config import load_settings
 # FastAPI app with lifespan (initialise DB on startup)
 # ---------------------------------------------------------------------------
 
+_settings = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = load_settings()
-    init_db(settings.database_url)
-    logger.info("Hikari dashboard started — DB: {}", settings.database_url)
+    global _settings
+    _settings = load_settings()
+    init_db(_settings.database_url)
+    logger.info("Hikari dashboard started — DB: {}", _settings.database_url)
     yield
 
 
@@ -101,6 +106,7 @@ class ObservationSummary(BaseModel):
     n_ensemble_stars: Optional[int]
     check_star_auid: Optional[str]
     check_star_magnitude: Optional[float]
+    check_star_published_magnitude: Optional[float] = None
     status: str
     rejected: bool
     rejection_reason: Optional[str]
@@ -304,6 +310,23 @@ def api_clear_all_data(db: Session = Depends(get_db)):
     """Delete all batch jobs and observations from the database."""
     n_jobs = clear_all_data(db)
     return {"status": "cleared", "jobs_deleted": n_jobs}
+
+
+@app.delete("/api/cache")
+def api_clear_cache():
+    """Delete all on-disk API response caches (Simbad, AAVSO VSP)."""
+    cache_dir = _settings.resolved_cache_dir if _settings else Path.home() / ".cache" / "hikari"
+    deleted = 0
+    if cache_dir.exists():
+        for entry in cache_dir.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry)
+                deleted += 1
+            else:
+                entry.unlink()
+                deleted += 1
+    logger.info("Cache cleared: {} entries removed from {}", deleted, cache_dir)
+    return {"status": "cleared", "entries_deleted": deleted, "cache_dir": str(cache_dir)}
 
 
 # ---------------------------------------------------------------------------

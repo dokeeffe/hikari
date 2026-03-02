@@ -161,6 +161,7 @@ class CalibratedMagnitude(BaseModel):
     calibration_fit: CalibrationFit
     check_star_auid: Optional[str] = None
     check_star_magnitude: Optional[float] = None
+    check_star_published_magnitude: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------

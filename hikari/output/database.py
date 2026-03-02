@@ -101,6 +101,7 @@ class ObservationORM(Base):
     # Check star
     check_star_auid: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     check_star_magnitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    check_star_published_magnitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     # Status
     status: Mapped[str] = mapped_column(String(20), default=ObservationStatus.SUCCESS.value)
@@ -120,6 +121,16 @@ class ObservationORM(Base):
 
 _engine = None
 _SessionLocal: Optional[sessionmaker] = None
+
+
+def _migrate(engine) -> None:
+    """Apply additive schema migrations for existing databases."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(observations)"))}
+        if "check_star_published_magnitude" not in existing:
+            conn.execute(text("ALTER TABLE observations ADD COLUMN check_star_published_magnitude REAL"))
+            conn.commit()
 
 
 def init_db(database_url: str = "sqlite:///hikari.db") -> None:
@@ -142,6 +153,7 @@ def init_db(database_url: str = "sqlite:///hikari.db") -> None:
     )
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     Base.metadata.create_all(_engine)
+    _migrate(_engine)
 
 
 @contextmanager

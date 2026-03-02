@@ -122,13 +122,31 @@ def _load_config_file(path: Path) -> dict:
     suffix = path.suffix.lower()
     if suffix == ".toml":
         with open(path, "rb") as f:
-            return tomllib.load(f)
+            data = tomllib.load(f)
     elif suffix in {".yaml", ".yml"}:
         with open(path) as f:
             data = yaml.safe_load(f)
-        return data or {}
+        data = data or {}
     else:
         raise ValueError(f"Unsupported config file format: {suffix}")
+    return _flatten_config(data)
+
+
+def _flatten_config(data: dict) -> dict:
+    """Flatten nested TOML/YAML sections into a flat dict for HikariSettings.
+
+    The [web] section keys are prefixed with 'web_' (host → web_host).
+    All other sections are merged directly into the top level.
+    """
+    flat = {}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            prefix = "web_" if key == "web" else ""
+            for subkey, subvalue in value.items():
+                flat[f"{prefix}{subkey}"] = subvalue
+        else:
+            flat[key] = value
+    return flat
 
 
 def write_default_config(dest: Path = Path("hikari.toml")) -> None:
