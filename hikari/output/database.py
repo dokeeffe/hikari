@@ -46,12 +46,31 @@ class Base(DeclarativeBase):
 # ORM models
 # ---------------------------------------------------------------------------
 
+class RunORM(Base):
+    """Represents a user-initiated processing run over a source directory."""
+
+    __tablename__ = "runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running/complete/failed
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+    completed_at: Mapped[Optional[datetime.datetime]] = mapped_column(DateTime, nullable=True)
+    progress: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    jobs: Mapped[list["BatchJobORM"]] = relationship("BatchJobORM", back_populates="run")
+
+
 class BatchJobORM(Base):
     """Represents one batch photometry run."""
 
     __tablename__ = "batch_jobs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("runs.id"), nullable=True)
     object_name: Mapped[str] = mapped_column(String(200))
     filter: Mapped[str] = mapped_column(String(10))
     source_path: Mapped[str] = mapped_column(Text)
@@ -70,6 +89,7 @@ class BatchJobORM(Base):
     fwhm: Mapped[float] = mapped_column(Float, default=3.0)
     ensemble_size: Mapped[int] = mapped_column(Integer, default=5)
 
+    run: Mapped[Optional["RunORM"]] = relationship("RunORM", back_populates="jobs")
     observations: Mapped[list["ObservationORM"]] = relationship(
         "ObservationORM", back_populates="job", cascade="all, delete-orphan"
     )
@@ -127,9 +147,19 @@ def _migrate(engine) -> None:
     """Apply additive schema migrations for existing databases."""
     from sqlalchemy import text
     with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(observations)"))}
-        if "check_star_published_magnitude" not in existing:
+        obs_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(observations)"))}
+        if "check_star_published_magnitude" not in obs_cols:
             conn.execute(text("ALTER TABLE observations ADD COLUMN check_star_published_magnitude REAL"))
+            conn.commit()
+
+        job_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(batch_jobs)"))}
+        if "run_id" not in job_cols:
+            conn.execute(text("ALTER TABLE batch_jobs ADD COLUMN run_id INTEGER REFERENCES runs(id)"))
+            conn.commit()
+
+        run_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(runs)"))}
+        if "notes" not in run_cols:
+            conn.execute(text("ALTER TABLE runs ADD COLUMN notes TEXT"))
             conn.commit()
 
 
@@ -227,4 +257,70 @@ def clear_all_data(session: Session) -> int:
     n_jobs = session.query(BatchJobORM).count()
     session.query(ObservationORM).delete()
     session.query(BatchJobORM).delete()
+    session.query(RunORM).delete()
     return n_jobs
+
+
+# ---------------------------------------------------------------------------
+# Run helpers
+# ---------------------------------------------------------------------------
+
+def create_run(session: Session, source_path: str) -> RunORM:
+    """Create a new Run record with status 'running'."""
+    run = RunORM(source_path=source_path, status="running", progress={})
+    session.add(run)
+    session.flush()
+    return run
+
+
+def update_run(
+    session: Session,
+    run_id: int,
+    *,
+    status: Optional[str] = None,
+    progress: Optional[dict] = None,
+    completed_at: Optional[datetime.datetime] = None,
+    notes: Optional[str] = None,
+) -> Optional[RunORM]:
+    """Update mutable fields on a RunORM."""
+    run = session.get(RunORM, run_id)
+    if run is None:
+        return None
+    if status is not None:
+        run.status = status
+    if progress is not None:
+        run.progress = progress
+    if completed_at is not None:
+        run.completed_at = completed_at
+    if notes is not None:
+        run.notes = notes
+    session.flush()
+    return run
+
+
+def list_runs(session: Session, limit: int = 50) -> list[RunORM]:
+    return (
+        session.query(RunORM)
+        .order_by(RunORM.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def get_run(session: Session, run_id: int) -> Optional[RunORM]:
+    return session.get(RunORM, run_id)
+
+
+def list_observations_for_run(
+    session: Session,
+    run_id: int,
+    limit: int = 1000,
+) -> list[ObservationORM]:
+    return (
+        session.query(ObservationORM)
+        .join(BatchJobORM, ObservationORM.job_id == BatchJobORM.id)
+        .filter(BatchJobORM.run_id == run_id)
+        .order_by(ObservationORM.julian_date.asc())
+        .limit(limit)
+        .all()
+    )

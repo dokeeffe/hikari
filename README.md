@@ -2,7 +2,7 @@
 
 **Variable star photometry pipeline for AAVSO reporting.**
 
-Hikari processes calibrated FITS images, performs ensemble aperture photometry, and produces [AAVSO Extended Format](https://www.aavso.org/aavso-extended-file-format) reports ready for submission. A web dashboard lets you review job history, inspect calibration quality, and reject bad frames before exporting.
+Hikari processes calibrated FITS images, performs ensemble aperture photometry, and produces [AAVSO Extended Format](https://www.aavso.org/aavso-extended-file-format) reports ready for submission. A web interface lets you trigger processing, monitor progress, inspect calibration quality, annotate runs, and export CSV files — all without touching the command line.
 
 ---
 
@@ -11,16 +11,16 @@ Hikari processes calibrated FITS images, performs ensemble aperture photometry, 
 | Area | Details |
 |---|---|
 | **FITS processing** | Auto-discovers and groups files by `OBJECT` + `FILTER` header |
-| **Target resolution** | Simbad catalog lookup with on-disk caching |
-| **Comparison stars** | AAVSO VSP API download with magnitude filtering and blacklist support |
+| **Target resolution** | AAVSO VSP API lookup with on-disk caching |
+| **Comparison stars** | AAVSO VSP download with magnitude filtering and blacklist support |
 | **Source detection** | DAOStarFinder with configurable FWHM and SNR threshold |
 | **Aperture photometry** | Circular aperture + annular sky subtraction, saturation flagging |
 | **Ensemble calibration** | Linear fit across N comparison stars nearest in brightness to target |
+| **Check star selection** | Best brightness-matched non-ensemble star; sacrifices an ensemble slot if needed |
 | **Error estimation** | Check-star residual (preferred) or ensemble fit RMS |
-| **Diagnostic plots** | Calibration scatter, target cutout, star-map overlay, lightcurve |
-| **AAVSO output** | Extended Format CSV written to configurable output directory |
-| **Observation history** | SQLite database — query past results, track trends |
-| **Web dashboard** | FastAPI + SPA for job monitoring and per-observation quality control |
+| **AAVSO output** | Extended Format CSV, downloadable per-run from the web UI or CLI |
+| **Observation history** | SQLite database — all results persisted across sessions |
+| **Web interface** | Trigger runs, live progress, per-frame quality control, CSV export, run notes |
 | **Config system** | `hikari.toml` / `HIKARI_*` env vars |
 
 ---
@@ -56,128 +56,111 @@ uv run hikari config
 # Writes hikari.toml to the current directory — edit obs_code, aperture, etc.
 ```
 
-### 2. Process a night's observations (auto-detect targets)
-
-```bash
-uv run hikari run /path/to/fits/folder/
-```
-
-Hikari will:
-- Discover all `.fits` files and group them by `OBJECT` + `FILTER` header
-- Resolve each target via Simbad
-- Download comparison stars from the AAVSO VSP API
-- Run the full photometry pipeline on each file
-- Write an AAVSO CSV and lightcurve PNG to `output_dir` (default: `~/Downloads/`)
-- Save all results to the local SQLite database
-
-### 3. Process a specific star and filter
-
-```bash
-uv run hikari reduce /path/to/fits/ --star "YZ LMi" --filter V
-```
-
-Optional overrides:
-
-```bash
-uv run hikari reduce /path/to/fits/ \
-  --star "SS Cyg" \
-  --filter V \
-  --aperture 5.0 \
-  --ensemble 6 \
-  --brightest 8.0 \
-  --dimmest 16.0 \
-  --output-dir ~/Desktop/output/
-```
-
-### 4. Preview without processing
-
-```bash
-uv run hikari run /path/to/fits/ --dry-run
-```
-
-### 5. View recent jobs
-
-```bash
-uv run hikari jobs
-```
-
-### 6. Launch the web dashboard
+### 2. Launch the web interface
 
 ```bash
 uv run hikari dashboard
 # Open http://127.0.0.1:8765
+```
+
+From the web interface you can:
+- Paste or browse to a directory of calibrated FITS files
+- Click **Process** to start a run — progress updates live as each object/filter group completes
+- Expand each star section to review individual observations
+- Reject bad frames and add notes to the run
+- Download the combined AAVSO CSV when satisfied
+
+### 3. Process from the command line (optional)
+
+```bash
+# Auto-detect targets from FITS headers
+uv run hikari run /path/to/fits/folder/
+
+# Process a specific star and filter
+uv run hikari reduce /path/to/fits/ --star "SS Cyg" --filter V
+
+# Preview groups without processing
+uv run hikari run /path/to/fits/ --dry-run
 ```
 
 ---
 
 ## How It Works
 
+### Pipeline (per FITS file)
+
+```
+catalog.py    → resolve_target() + download_comparison_stars()   [AAVSO VSP, disk-cached]
+fits_reader.py → validate_fits_file() → read_fits_metadata() + load_fits_data()
+detection.py  → detect_sources() → match_catalog_stars()         [DAOStarFinder + KDTree]
+photometry.py → measure_all()                                    [circular aperture + annular sky]
+calibration.py → run_calibration()                               [select_ensemble → fit_ensemble → calibrate_target]
+```
+
+`runner.py` orchestrates these steps for all groups in a directory. The web API calls `runner.run_directory()` in a background thread; the CLI wraps the same function with a Rich progress bar.
+
 ### Comparison Star Selection
 
-Comparison stars are sourced from the **AAVSO VSP API** for the target field and cached on disk. Hikari filters the catalog to stars within the configured magnitude window (`brightest_comp_star` to `dimmest_comp_star`) and removes any AUIDs on the blacklist (`excluded_auids`).
+Comparison stars are sourced from the **AAVSO VSP API** for the target field and cached on disk. Hikari filters the catalog to stars within the configured magnitude window (`brightest_comp_star` to `dimmest_comp_star`) and removes any AUIDs on the exclusion list (`excluded_auids`).
 
-For each FITS image, DAOStarFinder detects sources and a KDTree match associates them with the catalog. From the detected comparison stars, the **ensemble** is chosen by selecting the N stars (configurable via `ensemble_size`) whose **instrumental magnitude is closest to the target's instrumental magnitude**. This brightness-matching strategy minimises systematic errors from differential colour and non-linearity that would be introduced by mixing very bright and very faint comparisons. Saturated stars are excluded from the ensemble automatically.
+For each FITS image, DAOStarFinder detects sources and a KDTree match associates them with the catalog. The **ensemble** is chosen by selecting the N stars (configurable via `ensemble_size`) whose **instrumental magnitude is closest to the target's instrumental magnitude**. This brightness-matching strategy minimises systematic errors from differential colour and non-linearity. Saturated stars are excluded automatically.
 
-After the ensemble is selected, one additional comparison star (the first remaining valid star outside the ensemble) is reserved as a **check star** for independent error estimation.
+### Check Star
+
+After ensemble selection, the **check star** is the brightness-matched non-ensemble comparison star closest to the target's instrumental magnitude. If no non-ensemble candidate exists and the ensemble has more than two stars, the algorithm sacrifices the closest ensemble star for the check role so an independent quality estimate is always available.
 
 ### Ensemble Calibration
 
-A first-order polynomial (linear fit) is computed across the N ensemble comparison stars:
+A first-order polynomial is fit across the N ensemble comparison stars:
 
 ```
 published_mag = slope × instrumental_mag + intercept
 ```
 
-The fit is performed with `numpy.polyfit`. The target's calibrated magnitude is then derived by evaluating this polynomial at its instrumental magnitude.
+The target's calibrated magnitude is derived by evaluating this polynomial at its instrumental magnitude.
 
 ### Error Estimation
 
-The reported magnitude error is determined in one of two ways, in order of preference:
-
-1. **Check-star residual (preferred):** The check star — a comparison star intentionally excluded from the ensemble fit — is independently calibrated using the ensemble polynomial. The error is the absolute difference between its derived magnitude and its published catalog magnitude:
-
+1. **Check-star residual (preferred):** The check star is independently calibrated with the ensemble polynomial. The error is the absolute difference between its derived and published catalog magnitude:
    ```
    error = |calibrated_check_mag − published_check_mag|
    ```
-
-   This is a true end-to-end test of the calibration under the same atmospheric conditions and is the most meaningful single-frame error estimate available without a proper ensemble of check stars.
-
-2. **Fit RMS fallback:** If no check star is available (e.g. the VSP field returned very few comparison stars), the error is the RMS of the ensemble fit residuals — i.e. how tightly the comparison stars scatter around the linear fit.
-
-### Calibration Quality
-
-The calibration plot (`*_calibration.png`) is the primary quality diagnostic:
-
-- Blue dots: comparison stars (instrumental mag vs. published mag)
-- Dashed line: the linear ensemble fit
-- Red star: the target, placed on the fitted line
-
-**Good photometry** — dots sit tightly along the fit line, RMS ≲ 0.03 mag
-**Bad photometry** — wide scatter or curvature indicating a WCS problem, wrong aperture, poor sky subtraction, or guiding error
-
-The web dashboard colour-codes the `RMS FIT` column:
-
-| Colour | RMS | Interpretation |
-|---|---|---|
-| Green | < 0.03 mag | Excellent |
-| Amber | 0.03 – 0.07 mag | Acceptable |
-| Red | > 0.07 mag | Suspect — inspect plot before submitting |
+2. **Fit RMS fallback:** Used when no check star is available — the RMS scatter of the ensemble comparison stars around the linear fit.
 
 ---
 
-## Web Dashboard
+## Web Interface
 
 ```bash
 uv run hikari dashboard
 # Open http://127.0.0.1:8765
 ```
 
-- **Job list** (left panel) — status badges, observation counts, auto-refreshes every 30 s
-- **Observation table** (right panel) — per-frame JD, magnitude, error, fit RMS, ensemble size, airmass
-- **Ensemble fit panel** — interactive scatter plot showing comparison stars, fit line, and target position for the selected frame
-- **Target cutout** — 120×120 px ZScale-stretched crop from the original FITS centred on the target
-- **Reject / Accept** — mark bad observations before exporting
-- **Download AAVSO CSV** — exports only accepted observations for the selected job
+### Layout
+
+| Column | Content |
+|---|---|
+| **Left** | Inline form to start a new run (path input + 📁 directory browser), list of past runs with status and note indicator |
+| **Centre** | Selected run detail: progress bar (while processing), collapsible per-star observation tables, run notes |
+| **Right** | Per-observation detail: interactive ensemble fit scatter chart, 120×120 px ZScale target cutout |
+
+### Key actions
+
+- **Start a run** — enter or browse to a directory, click Process; progress updates every 2 seconds
+- **Expand a star** — click any star/filter row to reveal its observation table
+- **Reject / Accept** — mark individual frames before exporting
+- **Notes** — free-text note on each run (e.g. "Uploaded to AAVSO", "Poor seeing, check RMS"); saved on blur
+- **Download AAVSO CSV** — run-level export of all accepted observations in AAVSO Extended Format
+- **Delete Run** — removes the run and all its observations from the database
+- **Clear Cache** — deletes disk-cached AAVSO VSP responses (forces fresh API calls on next run)
+
+### Calibration quality colour coding
+
+| Colour | RMS fit | Interpretation |
+|---|---|---|
+| Green | < 0.03 mag | Excellent |
+| Amber | 0.03 – 0.07 mag | Acceptable |
+| Red | > 0.07 mag | Suspect — inspect ensemble chart before submitting |
 
 ---
 
@@ -194,7 +177,7 @@ aperture_radius = 4.0             # pixels
 sky_inner_radius = 6.0            # pixels
 sky_outer_radius = 10.0           # pixels
 fwhm = 3.0                        # pixels (for DAOStarFinder)
-source_snr = 50.0                 # detection threshold (sigma)
+source_snr = 2.0                  # detection threshold (sigma)
 ensemble_size = 5                 # comparison stars in the ensemble fit
 linear_limit = 60000.0            # ADU — above this, saturation is flagged
 
@@ -205,7 +188,7 @@ field_of_view = 18.5              # arcminutes (VSP query radius)
 excluded_auids = []               # AUIDs to permanently exclude
 
 [output]
-output_dir = "~/Downloads"
+output_dir = "~/Downloads"        # used by CLI CSV output
 
 [database]
 database_url = "sqlite:////Users/you/.local/share/hikari/hikari.db"
@@ -231,7 +214,7 @@ HIKARI_DATABASE_URL=sqlite:////data/hikari.db
 FITS files
     │
     ▼
-Simbad → resolve target RA/DEC (cached)
+AAVSO VSP → resolve target RA/DEC (cached)
     │
     ▼
 AAVSO VSP → download comparison stars (cached)
@@ -244,36 +227,17 @@ WCS + KDTree → match catalog stars to detected sources
 Circular aperture + annular sky → flux → instrumental magnitude
     │
 Select N ensemble comps (closest in brightness to target)
+Select check star (best brightness-matched non-ensemble comp)
     │
 Linear fit (instrumental mag → published mag)
     │
 Calibrate target + check-star error estimate
     │
-    ├── calibration.png   (quality check plot)
-    ├── cutout.png        (100×100 px target image)
-    ├── starmap.png       (full image with aperture overlays)
-    └── lightcurve.png    (time series across all files)
-    │
     ▼
-AAVSO CSV  →  output_dir/AAVSO-webops-file-<timestamp>.csv
 SQLite DB  →  ~/.local/share/hikari/hikari.db
+Web UI     →  review, annotate, reject, download AAVSO CSV
+CLI        →  AAVSO CSV written to output_dir/
 ```
-
----
-
-## Coming Soon
-
-### Transformation Coefficients
-
-Currently Hikari reports **instrumental (untransformed) magnitudes**. This is acceptable for many variable star programs, but observers with colour-sensitive detectors or who need maximum accuracy should apply transformation coefficients to standardise results to the Johnson-Cousins system.
-
-Planned work:
-- Accept user-supplied first-order transformation coefficients (e.g. T_v, T_bv) in `hikari.toml`
-- Apply the standard AAVSO/Henden transformation equations to each observation before writing the AAVSO CSV
-- Report both the raw and transformed magnitude in the database for comparison
-- Generate transformation diagnostic plots
-
-Until this is implemented, if your telescope/filter combination has significant colour response differences from the standard system, you may want to note this in the AAVSO submission (`observer_notes`).
 
 ---
 
@@ -282,12 +246,13 @@ Until this is implemented, if your telescope/filter combination has significant 
 ```
 hikari run       PATH    Auto-detect targets from FITS headers and reduce all groups
 hikari reduce    PATH    Reduce files for a specific star + filter
-hikari dashboard         Start the web dashboard (default: http://127.0.0.1:8765)
+hikari dashboard         Start the web interface (default: http://127.0.0.1:8765)
 hikari config    [DEST]  Write a default hikari.toml config file
 hikari jobs              List recent batch jobs from the database
+hikari clear             Delete all data from the database
 ```
 
-Global options available on all commands:
+Options available on most commands:
 
 | Flag | Description |
 |---|---|
@@ -302,13 +267,12 @@ Global options available on all commands:
 |---|---|
 | [astropy](https://www.astropy.org/) | FITS I/O, WCS, time handling, image stretching |
 | [photutils](https://photutils.readthedocs.io/) | DAOStarFinder, aperture photometry |
-| [astroquery](https://astroquery.readthedocs.io/) | Simbad catalog queries |
 | [httpx](https://www.python-httpx.org/) | AAVSO VSP API requests |
 | [scipy](https://scipy.org/) | KDTree for star matching |
-| [numpy](https://numpy.org/) / [matplotlib](https://matplotlib.org/) | Numerics and plotting |
+| [numpy](https://numpy.org/) / [matplotlib](https://matplotlib.org/) | Numerics and target cutout rendering |
 | [pydantic](https://docs.pydantic.dev/) | Data models and config validation |
 | [SQLAlchemy](https://www.sqlalchemy.org/) | ORM and SQLite persistence |
-| [FastAPI](https://fastapi.tiangolo.com/) | Web dashboard API |
+| [FastAPI](https://fastapi.tiangolo.com/) | Web API |
 | [Typer](https://typer.tiangolo.com/) + [Rich](https://rich.readthedocs.io/) | CLI and terminal output |
 | [loguru](https://loguru.readthedocs.io/) | Structured logging |
 
@@ -324,19 +288,19 @@ hikari/
 │   ├── core/
 │   │   ├── models.py       # Pydantic data models
 │   │   ├── fits_reader.py  # FITS I/O and header extraction
-│   │   ├── catalog.py      # Simbad + AAVSO VSP API (disk-cached)
+│   │   ├── catalog.py      # AAVSO VSP API (disk-cached)
 │   │   ├── detection.py    # DAOStarFinder + KDTree star matching
 │   │   ├── photometry.py   # Aperture photometry + sky subtraction
 │   │   ├── calibration.py  # Ensemble selection, linear fit, error
-│   │   └── pipeline.py     # Per-file + batch orchestration
+│   │   ├── pipeline.py     # Per-file + batch orchestration
+│   │   └── runner.py       # Directory-level orchestration (CLI + web shared)
 │   ├── output/
 │   │   ├── aavso.py        # AAVSO Extended Format CSV writer
-│   │   ├── plots.py        # Calibration, cutout, star-map, lightcurve
 │   │   └── database.py     # SQLAlchemy ORM + session management
 │   └── web/
-│       ├── app.py          # FastAPI dashboard + REST API
+│       ├── app.py          # FastAPI application + REST API
 │       └── static/
-│           └── index.html  # Single-page dashboard
+│           └── index.html  # Single-page web interface
 └── tests/
     ├── test_photometry.py
     ├── test_calibration.py
@@ -364,6 +328,19 @@ uv run ruff check hikari/ tests/
 # Type check
 uv run mypy hikari/
 ```
+
+---
+
+## Coming Soon
+
+### Transformation Coefficients
+
+Hikari currently reports **instrumental (untransformed) magnitudes**. Planned work:
+- Accept first-order transformation coefficients (e.g. Tv, Tbv) in `hikari.toml`
+- Apply standard AAVSO/Henden transformation equations before writing the AAVSO CSV
+- Report both raw and transformed magnitude in the database
+
+Until then, note any significant colour response differences in `observer_notes`.
 
 ---
 

@@ -27,17 +27,14 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.table import Table
 
 from hikari.config import HikariSettings, load_settings, write_default_config
-from hikari.core.catalog import download_comparison_stars, resolve_target
 from hikari.core.fits_reader import discover_fits_files, group_by_object_and_filter
 from hikari.core.models import AavsoObservation, PhotometricFilter
-from hikari.core.pipeline import BatchResult, process_batch
-from hikari.output.aavso import calibrated_to_observation, write_aavso_csv
+from hikari.core.runner import GroupResult, process_group, run_directory
+from hikari.output.aavso import write_aavso_csv
 from hikari.output.database import (
     init_db,
     get_session,
     list_jobs,
-    save_batch_job,
-    save_observation,
 )
 
 console = Console()
@@ -91,13 +88,14 @@ def run(
     for (obj, filt), grp_files in groups.items():
         rprint(f"\n[bold green]Processing:[/bold green] {obj} / {filt.value}")
         try:
-            obs = _run_group(
+            group_result = _run_group_with_progress(
                 fits_files=grp_files,
                 star_name=obj,
                 filter_band=filt,
                 settings=settings,
             )
-            all_aavso_obs.extend(obs)
+            all_aavso_obs.extend(group_result.aavso_obs)
+            _print_group_summary(group_result)
         except Exception as exc:
             rprint(f"[red]✗ {obj} / {filt.value} failed: {exc}[/red]")
             failed_groups.append(f"{obj}/{filt.value}")
@@ -148,9 +146,11 @@ def reduce(
     _ensure_db(settings)
     files = discover_fits_files(path)
     rprint(f"[bold]Found {len(files)} FITS files[/bold]")
-    obs = _run_group(fits_files=files, star_name=star, filter_band=filter_band, settings=settings)
-    if obs:
-        csv_path = write_aavso_csv(obs, obs_code=settings.obs_code, dest=None)
+    group_result = _run_group_with_progress(
+        fits_files=files, star_name=star, filter_band=filter_band, settings=settings
+    )
+    if group_result.aavso_obs:
+        csv_path = write_aavso_csv(group_result.aavso_obs, obs_code=settings.obs_code, dest=None)
         rprint(f"  AAVSO CSV → [cyan]{csv_path}[/cyan]")
 
 
@@ -284,17 +284,13 @@ def _ensure_db(settings: HikariSettings) -> None:
     init_db(settings.database_url)
 
 
-def _run_group(
+def _run_group_with_progress(
     fits_files: list[Path],
     star_name: str,
     filter_band: PhotometricFilter,
     settings: HikariSettings,
-) -> list[AavsoObservation]:
-    """Resolve star, download comps, run pipeline, save results.
-
-    Returns the list of AAVSO observations generated for this group
-    (empty list when nothing succeeded).
-    """
+) -> GroupResult:
+    """Wrap process_group with a Rich progress bar."""
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -302,189 +298,32 @@ def _run_group(
         TaskProgressColumn(),
         console=console,
     ) as progress:
-        # Resolve target
-        task = progress.add_task("Resolving target via AAVSO…", total=None)
-        try:
-            target = resolve_target(star_name, cache_dir=settings.resolved_cache_dir)
-        except ValueError as exc:
-            rprint(f"[red]AAVSO target resolution failed: {exc}[/red]")
-            return []
-        progress.remove_task(task)
-
-        # Download comparison stars
-        task = progress.add_task("Downloading comparison stars from AAVSO VSP…", total=None)
-        try:
-            vsp_chart = download_comparison_stars(
-                ra=target.ra,
-                dec=target.dec,
-                filter_band=filter_band,
-                field_of_view=settings.field_of_view,
-                brightest=settings.brightest_comp_star,
-                dimmest=settings.dimmest_comp_star,
-                excluded_auids=settings.excluded_auids,
-                cache_dir=settings.resolved_cache_dir,
-            )
-        except RuntimeError as exc:
-            rprint(f"[red]VSP API failed: {exc}[/red]")
-            return []
-        progress.remove_task(task)
-
-        if not vsp_chart.comparison_stars:
-            rprint("[red]No comparison stars downloaded — cannot calibrate.[/red]")
-            return []
-
-        # Run pipeline with progress updates
         n_files = len(fits_files)
-        task = progress.add_task("Reducing FITS files…", total=n_files)
+        task = progress.add_task(f"Processing {star_name} / {filter_band.value}…", total=n_files)
 
         def on_progress(msg: str, cur: int, total: int) -> None:
             progress.update(task, completed=cur, description=msg)
 
-        batch_result = process_batch(
+        return process_group(
             fits_files=fits_files,
-            target=target,
-            vsp_chart=vsp_chart,
+            star_name=star_name,
+            filter_band=filter_band,
             settings=settings,
-            progress=on_progress,
-        )
-        progress.update(task, completed=n_files)
-
-    return _save_results(batch_result, vsp_chart.chart_id, settings)
-
-
-def _save_results(
-    result: BatchResult,
-    chart_id: str,
-    settings: HikariSettings,
-) -> list[AavsoObservation]:
-    """Persist results to DB, generate lightcurve, and print summary.
-
-    Returns the list of :class:`AavsoObservation` objects for this group
-    so the caller can accumulate them into a combined CSV.
-    """
-    if not result.successful:
-        rprint("[yellow]No successful observations — nothing to save.[/yellow]")
-        _print_failures(result)
-        return []
-
-    with get_session() as db:
-        # Create job record
-        job_orm = save_batch_job(
-            db,
-            {
-                "object_name": result.object_name,
-                "filter": result.filter,
-                "source_path": str(result.file_results[0].file_path.parent) if result.file_results else "",
-                "status": "success",
-                "obs_code": settings.obs_code,
-                "notes": settings.observer_notes,
-                "chart_id": chart_id,
-                "completed_at": datetime.datetime.utcnow(),
-                "aperture_radius": settings.aperture_radius,
-                "fwhm": settings.fwhm,
-                "ensemble_size": settings.ensemble_size,
-            },
+            on_progress=on_progress,
         )
 
-        # Save per-file observations
-        for fr in result.file_results:
-            if fr.success and fr.calibrated_magnitude:
-                cal = fr.calibrated_magnitude
-                extra: dict = {}
-                if fr.target_aperture_result:
-                    extra["target_x"] = fr.target_aperture_result.x
-                    extra["target_y"] = fr.target_aperture_result.y
-                    extra["target_instrumental_mag"] = fr.target_aperture_result.instrumental_magnitude
-                if fr.ensemble_comps and fr.ensemble_stars:
-                    extra["ensemble_points"] = [
-                        {
-                            "auid": ap.auid,
-                            "instrumental_mag": ap.instrumental_magnitude,
-                            "published_mag": ms.published_magnitude,
-                        }
-                        for ap, ms in zip(fr.ensemble_comps, fr.ensemble_stars)
-                        if ap.instrumental_magnitude is not None
-                    ]
-                save_observation(
-                    db,
-                    {
-                        "job_id": job_orm.id,
-                        "file_name": str(fr.file_path),
-                        "star_name": result.object_name,
-                        "julian_date": cal.julian_date,
-                        "magnitude": cal.magnitude,
-                        "magnitude_error": cal.magnitude_error,
-                        "filter": cal.filter.value,
-                        "airmass": cal.airmass,
-                        "fit_slope": cal.calibration_fit.slope,
-                        "fit_intercept": cal.calibration_fit.intercept,
-                        "fit_rms": cal.calibration_fit.residual_rms,
-                        "n_ensemble_stars": cal.calibration_fit.n_stars,
-                        "check_star_auid": cal.check_star_auid,
-                        "check_star_magnitude": cal.check_star_magnitude,
-                        "check_star_published_magnitude": cal.check_star_published_magnitude,
-                        "status": "success",
-                        "extra": extra or None,
-                    },
-                )
-            else:
-                save_observation(
-                    db,
-                    {
-                        "job_id": job_orm.id,
-                        "file_name": str(fr.file_path),
-                        "star_name": result.object_name,
-                        "julian_date": 0.0,
-                        "filter": result.filter,
-                        "status": "failed",
-                        "error_message": fr.error,
-                    },
-                )
 
-    # Build AAVSO observations
-    aavso_obs = [
-        calibrated_to_observation(
-            cal=fr.calibrated_magnitude,  # type: ignore[arg-type]
-            star_name=result.object_name,
-            chart_id=chart_id,
-            obs_code=settings.obs_code,
-            notes=settings.observer_notes,
-        )
-        for fr in result.successful
-        if fr.calibrated_magnitude
-    ]
+def _print_group_summary(result: GroupResult) -> None:
+    if not result.success:
+        rprint(f"[red]✗ {result.object_name} / {result.filter}: {result.error}[/red]")
+        return
 
-    # Summary
-    rprint(f"\n[bold green]✓ {len(result.successful)}/{len(result.file_results)} files succeeded[/bold green]")
-    _print_failures(result)
+    rprint(f"[bold green]✓ {result.n_succeeded}/{result.n_files} files succeeded[/bold green]")
 
-    # Print magnitude table
-    table = Table(title=f"{result.object_name} Observations")
-    table.add_column("File")
-    table.add_column("JD", justify="right")
-    table.add_column("Mag", justify="right")
-    table.add_column("±Err", justify="right")
-    table.add_column("Fit RMS", justify="right")
-    for fr in result.successful:
-        if fr.calibrated_magnitude:
-            cal = fr.calibrated_magnitude
-            table.add_row(
-                fr.file_path.name,
-                f"{cal.julian_date:.5f}",
-                f"{cal.magnitude:.3f}",
-                f"{cal.magnitude_error:.3f}",
-                f"{cal.calibration_fit.residual_rms:.4f}",
-            )
-    console.print(table)
-
-    return aavso_obs
-
-
-def _print_failures(result: BatchResult) -> None:
-    if result.failed:
-        rprint(f"\n[yellow]Failed files ({len(result.failed)}):[/yellow]")
-        for fr in result.failed:
-            rprint(f"  [red]✗[/red] {fr.file_path.name}: {fr.error}")
+    if result.failed_files:
+        rprint(f"\n[yellow]Failed files ({len(result.failed_files)}):[/yellow]")
+        for fname, err in result.failed_files:
+            rprint(f"  [red]✗[/red] {fname}: {err}")
 
 
 if __name__ == "__main__":

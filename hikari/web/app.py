@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import shutil
+import threading
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -28,15 +29,22 @@ from sqlalchemy.orm import Session
 from hikari.output.database import (
     BatchJobORM,
     ObservationORM,
+    RunORM,
     clear_all_data,
+    create_run,
+    get_run,
     get_session,
     get_job,
     init_db,
     list_jobs,
     list_observations,
+    list_observations_for_run,
+    list_runs,
+    update_run,
 )
 from hikari.output.aavso import format_aavso_csv
 from hikari.core.models import AavsoObservation, PhotometricFilter
+from hikari.core.runner import run_directory
 from hikari.config import load_settings
 
 # ---------------------------------------------------------------------------
@@ -115,6 +123,35 @@ class ObservationSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RunJobSummary(BaseModel):
+    id: int
+    object_name: str
+    filter: str
+    status: str
+    n_observations: int
+    n_failed: int
+
+    model_config = {"from_attributes": True}
+
+
+class RunSummary(BaseModel):
+    id: int
+    source_path: str
+    status: str
+    created_at: datetime.datetime
+    completed_at: Optional[datetime.datetime]
+    progress: Optional[dict]
+    n_jobs: int
+    n_observations: int
+    notes: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class CreateRunRequest(BaseModel):
+    source_path: str
+
+
 # ---------------------------------------------------------------------------
 # DB dependency
 # ---------------------------------------------------------------------------
@@ -122,6 +159,232 @@ class ObservationSummary(BaseModel):
 def get_db():
     with get_session() as session:
         yield session
+
+
+# ---------------------------------------------------------------------------
+# Run endpoints
+# ---------------------------------------------------------------------------
+
+def _run_background(run_id: int, source_path: str) -> None:
+    """Background thread: process a directory and update run progress in DB."""
+    try:
+        settings = load_settings()
+        groups_done = 0
+        total_groups = 0
+
+        def on_group_start(label: str, idx: int, total: int) -> None:
+            nonlocal total_groups
+            total_groups = total
+            with get_session() as db:
+                run = db.get(RunORM, run_id)
+                if run is None:
+                    return
+                prog = dict(run.progress or {})
+                prog["total"] = total
+                prog["completed"] = idx
+                prog["current_group"] = label
+                run.progress = prog
+
+        result = run_directory(
+            source_path=source_path,
+            settings=settings,
+            run_id=run_id,
+            on_group_start=on_group_start,
+        )
+
+        # Build final progress summary
+        groups_summary = {}
+        for g in result.groups:
+            groups_summary[f"{g.object_name}/{g.filter}"] = {
+                "n_succeeded": g.n_succeeded,
+                "n_failed": g.n_failed,
+                "error": g.error,
+            }
+
+        with get_session() as db:
+            update_run(
+                db,
+                run_id,
+                status="complete",
+                completed_at=datetime.datetime.utcnow(),
+                progress={
+                    "total": len(result.groups),
+                    "completed": len(result.groups),
+                    "current_group": None,
+                    "groups": groups_summary,
+                },
+            )
+    except Exception as exc:
+        logger.exception("Run {} failed: {}", run_id, exc)
+        with get_session() as db:
+            update_run(db, run_id, status="failed", completed_at=datetime.datetime.utcnow())
+
+
+@app.post("/api/runs", response_model=RunSummary)
+def api_create_run(payload: CreateRunRequest, db: Session = Depends(get_db)):
+    """Create a new processing run and start it in the background."""
+    source_path = str(Path(payload.source_path.strip()).expanduser())
+    if not Path(source_path).exists():
+        raise HTTPException(status_code=400, detail=f"Path does not exist: {source_path}")
+
+    run = create_run(db, source_path=source_path)
+    run_id = run.id
+
+    t = threading.Thread(
+        target=_run_background,
+        args=(run_id, source_path),
+        daemon=True,
+        name=f"hikari-run-{run_id}",
+    )
+    t.start()
+
+    return RunSummary(
+        id=run.id,
+        source_path=run.source_path,
+        status=run.status,
+        created_at=run.created_at,
+        completed_at=run.completed_at,
+        progress=run.progress,
+        n_jobs=0,
+        n_observations=0,
+    )
+
+
+@app.get("/api/runs", response_model=list[RunSummary])
+def api_list_runs(limit: int = 50, db: Session = Depends(get_db)):
+    """List recent processing runs."""
+    runs = list_runs(db, limit=limit)
+    result = []
+    for run in runs:
+        jobs = run.jobs
+        n_obs = sum(
+            sum(1 for o in j.observations if o.status == "success" and not o.rejected)
+            for j in jobs
+        )
+        result.append(RunSummary(
+            id=run.id,
+            source_path=run.source_path,
+            status=run.status,
+            created_at=run.created_at,
+            completed_at=run.completed_at,
+            progress=run.progress,
+            n_jobs=len(jobs),
+            n_observations=n_obs,
+            notes=run.notes,
+        ))
+    return result
+
+
+@app.get("/api/runs/{run_id}", response_model=RunSummary)
+def api_get_run(run_id: int, db: Session = Depends(get_db)):
+    """Get a single run with its progress and job summaries."""
+    run = get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    jobs = run.jobs
+    n_obs = sum(
+        sum(1 for o in j.observations if o.status == "success" and not o.rejected)
+        for j in jobs
+    )
+    return RunSummary(
+        id=run.id,
+        source_path=run.source_path,
+        status=run.status,
+        created_at=run.created_at,
+        completed_at=run.completed_at,
+        progress=run.progress,
+        n_jobs=len(jobs),
+        n_observations=n_obs,
+        notes=run.notes,
+    )
+
+
+@app.get("/api/runs/{run_id}/jobs", response_model=list[JobSummary])
+def api_run_jobs(run_id: int, db: Session = Depends(get_db)):
+    """List all batch jobs belonging to a run."""
+    run = get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    summaries = []
+    for job in run.jobs:
+        obs = job.observations
+        n_ok = sum(1 for o in obs if o.status == "success" and not o.rejected)
+        n_fail = sum(1 for o in obs if o.status == "failed")
+        summaries.append(JobSummary(
+            id=job.id,
+            object_name=job.object_name,
+            filter=job.filter,
+            status=job.status,
+            created_at=job.created_at,
+            completed_at=job.completed_at,
+            n_observations=n_ok,
+            n_failed=n_fail,
+            chart_id=job.chart_id,
+            aavso_csv_path=job.aavso_csv_path,
+        ))
+    return summaries
+
+
+class PatchRunRequest(BaseModel):
+    notes: str
+
+
+@app.patch("/api/runs/{run_id}")
+def api_patch_run(run_id: int, payload: PatchRunRequest, db: Session = Depends(get_db)):
+    """Update mutable fields on a run (currently: notes)."""
+    run = update_run(db, run_id, notes=payload.notes)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"status": "ok"}
+
+
+@app.delete("/api/runs/{run_id}")
+def api_delete_run(run_id: int, db: Session = Depends(get_db)):
+    """Delete a run and all its jobs and observations."""
+    run = get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    for job in run.jobs:
+        db.query(ObservationORM).filter(ObservationORM.job_id == job.id).delete()
+        db.delete(job)
+    db.delete(run)
+    db.flush()
+    return {"status": "deleted", "run_id": run_id}
+
+
+@app.get("/api/runs/{run_id}/aavso-csv", response_class=PlainTextResponse)
+def api_run_aavso_csv(run_id: int, db: Session = Depends(get_db)):
+    """Return a combined AAVSO CSV for all accepted observations in a run."""
+    run = get_run(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    all_obs = list_observations_for_run(db, run_id)
+    accepted = [o for o in all_obs if o.status == "success" and not o.rejected]
+
+    # Build obs_code from first job's setting (they all share the same settings)
+    obs_code = ""
+    if run.jobs:
+        obs_code = run.jobs[0].obs_code
+
+    # Need chart_id per-job; build a lookup
+    job_chart: dict[int, str] = {j.id: (j.chart_id or "") for j in run.jobs}
+
+    aavso_obs = [
+        AavsoObservation(
+            name=o.star_name,
+            date=o.julian_date,
+            magnitude=o.magnitude or 0.0,
+            magnitude_error=o.magnitude_error or 0.0,
+            filter=PhotometricFilter(o.filter),
+            kname=o.check_star_auid,
+            kmag=o.check_star_magnitude,
+            airmass=o.airmass,
+            chart=job_chart.get(o.job_id, ""),
+        )
+        for o in accepted
+    ]
+    return format_aavso_csv(aavso_obs, obs_code=obs_code)
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +590,29 @@ def api_clear_cache():
                 deleted += 1
     logger.info("Cache cleared: {} entries removed from {}", deleted, cache_dir)
     return {"status": "cleared", "entries_deleted": deleted, "cache_dir": str(cache_dir)}
+
+
+# ---------------------------------------------------------------------------
+# Directory browser
+# ---------------------------------------------------------------------------
+
+@app.get("/api/browse")
+def api_browse(path: Optional[str] = None):
+    """Return subdirectories of *path* for the directory-picker UI."""
+    p = Path(path).expanduser().resolve() if path else Path.home()
+    if not p.is_dir():
+        raise HTTPException(status_code=400, detail="Not a directory")
+
+    entries = []
+    try:
+        for entry in sorted(p.iterdir(), key=lambda e: e.name.lower()):
+            if entry.is_dir() and not entry.name.startswith("."):
+                entries.append({"name": entry.name, "path": str(entry)})
+    except PermissionError:
+        pass
+
+    parent = str(p.parent) if p != p.parent else None
+    return {"path": str(p), "parent": parent, "entries": entries}
 
 
 # ---------------------------------------------------------------------------
