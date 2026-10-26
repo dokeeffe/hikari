@@ -62,13 +62,9 @@ Error priority:
 
 ### Configuration (`config.py`)
 
-`HikariSettings` (pydantic-settings) loads from, in priority order:
-1. `HIKARI_*` environment variables
-2. Explicitly passed config file
-3. Auto-discovered `hikari.toml` / `hikari.yaml` (cwd, then `~/.config/hikari/`)
-4. Built-in defaults
+`HikariSettings` loads from `hikari.toml` in the current working directory. Missing fields use the model defaults; if the file itself is missing, Hikari raises `FileNotFoundError` with instructions to create it using `hikari config`.
 
-The `[photometry]`, `[comparison_stars]`, `[output]`, `[database]`, and `[web]` TOML sections are flattened into `HikariSettings` fields (pydantic-settings handles nested TOML as flat kwargs).
+The `[photometry]`, `[comparison_stars]`, `[output]`, `[database]`, and `[web]` TOML sections are flattened into `HikariSettings` fields.
 
 ### Database (`output/database.py`)
 

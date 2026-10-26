@@ -1,43 +1,15 @@
-"""Configuration management for Hikari.
-
-Supports loading from:
-  - hikari.toml or hikari.yaml in the current directory
-  - ~/.config/hikari/config.toml
-  - Environment variables (HIKARI_* prefix)
-  - CLI overrides
-"""
+"""Load Hikari settings from the current directory's hikari.toml."""
 
 from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Optional
 
-import yaml
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-# ---------------------------------------------------------------------------
-# Default config paths
-# ---------------------------------------------------------------------------
-
-CONFIG_SEARCH_PATHS = [
-    Path.cwd() / "hikari.toml",
-    Path.cwd() / "hikari.yaml",
-    Path.home() / ".config" / "hikari" / "config.toml",
-    Path.home() / ".config" / "hikari" / "config.yaml",
-]
+from pydantic import BaseModel, Field
 
 
-class HikariSettings(BaseSettings):
-    """Application-wide settings with env-var override support."""
-
-    model_config = SettingsConfigDict(
-        env_prefix="HIKARI_",
-        env_file=".env",
-        case_sensitive=False,
-        extra="ignore",
-    )
+class HikariSettings(BaseModel):
+    """Application-wide settings loaded from hikari.toml."""
 
     # --- Observer ---
     obs_code: str = Field(
@@ -55,14 +27,22 @@ class HikariSettings(BaseSettings):
     sky_outer_radius: float = Field(default=10.0, gt=0, description="Outer sky annulus radius (px)")
     fwhm: float = Field(default=1.5, gt=0, description="FWHM for DAOStarFinder (pixels)")
     source_snr: float = Field(default=2.0, gt=0, description="Detection threshold in sigma")
-    ensemble_size: int = Field(default=5, gt=0, description="Number of comparison stars for ensemble")
+    ensemble_size: int = Field(
+        default=5, gt=0, description="Number of comparison stars for ensemble"
+    )
     linear_limit: float = Field(default=60000.0, description="ADU limit for linearity check")
 
     # --- Comparison star selection ---
-    brightest_comp_star: float = Field(default=7.0, description="Brightest allowed comparison star (mag)")
-    dimmest_comp_star: float = Field(default=17.0, description="Dimmest allowed comparison star (mag)")
+    brightest_comp_star: float = Field(
+        default=7.0, description="Brightest allowed comparison star (mag)"
+    )
+    dimmest_comp_star: float = Field(
+        default=17.0, description="Dimmest allowed comparison star (mag)"
+    )
     field_of_view: float = Field(default=18.5, description="VSP query field of view (arcminutes)")
-    excluded_auids: list[str] = Field(default_factory=list, description="Comparison star AUIDs to exclude")
+    excluded_auids: list[str] = Field(
+        default_factory=list, description="Comparison star AUIDs to exclude"
+    )
 
     # --- File I/O ---
     output_dir: Path = Field(
@@ -83,7 +63,7 @@ class HikariSettings(BaseSettings):
     web_port: int = Field(default=8765, description="Web dashboard port")
 
     # --- Caching ---
-    cache_dir: Optional[Path] = Field(
+    cache_dir: Path | None = Field(
         default=None,
         description="Directory for API response cache (None = ~/.cache/hikari)",
     )
@@ -95,50 +75,25 @@ class HikariSettings(BaseSettings):
         return Path.home() / ".cache" / "hikari"
 
 
-def load_settings(config_file: Optional[Path] = None) -> HikariSettings:
-    """Load settings, merging file config with environment variables.
-
-    Priority (highest first):
-      1. Environment variables (HIKARI_*)
-      2. Explicitly provided config file
-      3. Auto-discovered config file (hikari.toml / hikari.yaml)
-      4. Built-in defaults
-    """
-    file_data: dict = {}
-
-    # Determine config file to load
-    paths_to_try = ([config_file] if config_file else []) + CONFIG_SEARCH_PATHS
-    for path in paths_to_try:
-        if path and path.exists():
-            file_data = _load_config_file(path)
-            break
-
-    # Pydantic-settings handles env vars automatically; merge file data as init kwargs
-    return HikariSettings(**file_data)
+def load_settings() -> HikariSettings:
+    """Load settings from ./hikari.toml, using model defaults for omitted values."""
+    config_path = Path.cwd() / "hikari.toml"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_path}. Run `hikari config` to create it."
+        )
+    with config_path.open("rb") as config_file:
+        file_data = tomllib.load(config_file)
+    return HikariSettings.model_validate(_flatten_config(file_data))
 
 
-def _load_config_file(path: Path) -> dict:
-    """Parse a TOML or YAML config file and return a flat dict."""
-    suffix = path.suffix.lower()
-    if suffix == ".toml":
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-    elif suffix in {".yaml", ".yml"}:
-        with open(path) as f:
-            data = yaml.safe_load(f)
-        data = data or {}
-    else:
-        raise ValueError(f"Unsupported config file format: {suffix}")
-    return _flatten_config(data)
-
-
-def _flatten_config(data: dict) -> dict:
-    """Flatten nested TOML/YAML sections into a flat dict for HikariSettings.
+def _flatten_config(data: dict[str, object]) -> dict[str, object]:
+    """Flatten the supported TOML sections into HikariSettings fields.
 
     The [web] section keys are prefixed with 'web_' (host → web_host).
     All other sections are merged directly into the top level.
     """
-    flat = {}
+    flat: dict[str, object] = {}
     for key, value in data.items():
         if isinstance(value, dict):
             prefix = "web_" if key == "web" else ""
@@ -149,11 +104,10 @@ def _flatten_config(data: dict) -> dict:
     return flat
 
 
-def write_default_config(dest: Path = Path("hikari.toml")) -> None:
-    """Write a commented default config file to *dest*."""
+def write_default_config() -> None:
+    """Write the default configuration to ./hikari.toml."""
     settings = HikariSettings()
     content = f"""# Hikari configuration file
-# Environment variables with HIKARI_ prefix override these values.
 
 # AAVSO observer code (required for submission)
 obs_code = "{settings.obs_code}"
@@ -184,4 +138,4 @@ database_url = "{settings.database_url}"
 host = "{settings.web_host}"
 port = {settings.web_port}
 """
-    dest.write_text(content)
+    (Path.cwd() / "hikari.toml").write_text(content)

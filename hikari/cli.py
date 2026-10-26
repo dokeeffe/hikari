@@ -16,7 +16,6 @@ from __future__ import annotations
 import datetime
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 import uvicorn
@@ -45,26 +44,17 @@ app = typer.Typer(
 )
 
 # ---------------------------------------------------------------------------
-# Shared config option
-# ---------------------------------------------------------------------------
-
-CONFIG_OPTION = typer.Option(None, "--config", "-c", help="Path to hikari.toml or hikari.yaml")
-
-
-# ---------------------------------------------------------------------------
 # run – auto-detect targets from FITS headers
 # ---------------------------------------------------------------------------
 
 @app.command()
 def run(
     path: str = typer.Argument(..., help="Directory or glob of FITS files"),
-    config: Optional[Path] = CONFIG_OPTION,
     dry_run: bool = typer.Option(False, "--dry-run", help="Discover files but do not process"),
-    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Auto-detect targets from FITS headers and process each group."""
-    settings = _load(config, output_dir, verbose)
+    settings = _load(verbose)
     _ensure_db(settings)
 
     files = discover_fits_files(path)
@@ -122,26 +112,10 @@ def reduce(
     path: str = typer.Argument(..., help="Directory or glob of FITS files"),
     star: str = typer.Option(..., "--star", "-s", help="Target star name (resolved via AAVSO VSP)"),
     filter_band: PhotometricFilter = typer.Option(PhotometricFilter.V, "--filter", "-f"),
-    config: Optional[Path] = CONFIG_OPTION,
-    brightest: Optional[float] = typer.Option(None, "--brightest"),
-    dimmest: Optional[float] = typer.Option(None, "--dimmest"),
-    ensemble: Optional[int] = typer.Option(None, "--ensemble"),
-    aperture: Optional[float] = typer.Option(None, "--aperture"),
-    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Reduce FITS files for a specific star and filter."""
-    settings = _load(config, output_dir, verbose)
-
-    # CLI overrides
-    if brightest is not None:
-        settings.brightest_comp_star = brightest
-    if dimmest is not None:
-        settings.dimmest_comp_star = dimmest
-    if ensemble is not None:
-        settings.ensemble_size = ensemble
-    if aperture is not None:
-        settings.aperture_radius = aperture
+    settings = _load(verbose)
 
     _ensure_db(settings)
     files = discover_fits_files(path)
@@ -159,16 +133,12 @@ def reduce(
 # ---------------------------------------------------------------------------
 
 @app.command()
-def dashboard(
-    config: Optional[Path] = CONFIG_OPTION,
-    host: Optional[str] = typer.Option(None, "--host"),
-    port: Optional[int] = typer.Option(None, "--port"),
-) -> None:
+def dashboard() -> None:
     """Start the Hikari web dashboard."""
-    settings = _load(config)
+    settings = _load()
     _ensure_db(settings)
-    h = host or settings.web_host
-    p = port or settings.web_port
+    h = settings.web_host
+    p = settings.web_port
     rprint(f"[bold green]Starting Hikari dashboard at http://{h}:{p}[/bold green]")
     uvicorn.run("hikari.web.app:app", host=h, port=p, reload=False)
 
@@ -178,12 +148,10 @@ def dashboard(
 # ---------------------------------------------------------------------------
 
 @app.command("config")
-def init_config(
-    dest: Path = typer.Argument(Path("hikari.toml"), help="Output config file path"),
-) -> None:
+def init_config() -> None:
     """Write a default hikari.toml configuration file."""
-    write_default_config(dest)
-    rprint(f"[green]Config written to[/green] [cyan]{dest}[/cyan]")
+    write_default_config()
+    rprint("[green]Config written to[/green] [cyan]hikari.toml[/cyan]")
 
 
 # ---------------------------------------------------------------------------
@@ -192,11 +160,10 @@ def init_config(
 
 @app.command()
 def jobs(
-    config: Optional[Path] = CONFIG_OPTION,
     limit: int = typer.Option(20, "--limit", "-n"),
 ) -> None:
     """List recent batch jobs from the database."""
-    settings = _load(config)
+    settings = _load()
     _ensure_db(settings)
     with get_session() as db:
         job_list = list_jobs(db, limit=limit)
@@ -237,11 +204,10 @@ def jobs(
 
 @app.command()
 def clear(
-    config: Optional[Path] = CONFIG_OPTION,
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Delete all jobs and observations from the database."""
-    settings = _load(config)
+    settings = _load()
     _ensure_db(settings)
     if not yes:
         confirm = typer.confirm("This will delete ALL jobs and observations. Continue?")
@@ -258,14 +224,8 @@ def clear(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _load(
-    config: Optional[Path],
-    output_dir: Optional[Path] = None,
-    verbose: bool = False,
-) -> HikariSettings:
-    settings = load_settings(config)
-    if output_dir:
-        settings.output_dir = output_dir
+def _load(verbose: bool = False) -> HikariSettings:
+    settings = load_settings()
     _configure_logging(verbose)
     return settings
 

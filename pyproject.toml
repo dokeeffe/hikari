@@ -19,9 +19,6 @@ dependencies = [
     "matplotlib>=3.8",
     # Config & validation
     "pydantic>=2.6",
-    "pydantic-settings>=2.2",
-    "tomli>=2.0; python_version < '3.11'",
-    "PyYAML>=6.0",
     # CLI
     "typer>=0.12",
     "rich>=13.7",

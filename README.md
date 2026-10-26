@@ -21,7 +21,7 @@ Hikari processes calibrated FITS images, performs ensemble aperture photometry, 
 | **AAVSO output** | Extended Format CSV, downloadable per-run from the web UI or CLI |
 | **Observation history** | SQLite database — all results persisted across sessions |
 | **Web interface** | Trigger runs, live progress, per-frame quality control, CSV export, run notes |
-| **Config system** | `hikari.toml` / `HIKARI_*` env vars |
+| **Config system** | `hikari.toml` in the current directory |
 
 ---
 
@@ -166,7 +166,7 @@ uv run hikari dashboard
 
 ## Configuration
 
-Run `hikari config` to generate an annotated `hikari.toml`. All settings can be overridden with `HIKARI_*` environment variables.
+Run `hikari config` to generate an annotated `hikari.toml` in the current directory. Hikari reads settings only from that file; edit it to change settings. If the file is missing, create it with `hikari config`.
 
 ```toml
 obs_code = "MUY"                  # Your AAVSO observer code
@@ -196,14 +196,6 @@ database_url = "sqlite:////Users/you/.local/share/hikari/hikari.db"
 [web]
 host = "127.0.0.1"
 port = 8765
-```
-
-### Environment variable overrides
-
-```bash
-HIKARI_OBS_CODE=MUY
-HIKARI_APERTURE_RADIUS=5.0
-HIKARI_DATABASE_URL=sqlite:////data/hikari.db
 ```
 
 ---
@@ -247,16 +239,15 @@ CLI        →  AAVSO CSV written to output_dir/
 hikari run       PATH    Auto-detect targets from FITS headers and reduce all groups
 hikari reduce    PATH    Reduce files for a specific star + filter
 hikari dashboard         Start the web interface (default: http://127.0.0.1:8765)
-hikari config    [DEST]  Write a default hikari.toml config file
+hikari config            Write a default hikari.toml config file
 hikari jobs              List recent batch jobs from the database
 hikari clear             Delete all data from the database
 ```
 
-Options available on most commands:
+Logging option for `run` and `reduce`:
 
 | Flag | Description |
 |---|---|
-| `--config / -c` | Path to a `hikari.toml` config file |
 | `--verbose / -v` | Enable DEBUG-level console output |
 
 ---

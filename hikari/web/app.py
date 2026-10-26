@@ -76,6 +76,17 @@ STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+def _configured_obs_code() -> str:
+    """Return the observer code from the active config file or raise a UI-visible error."""
+    obs_code = load_settings().obs_code
+    if obs_code is None or not obs_code.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="AAVSO observer code is missing. Set a non-empty obs_code in hikari.toml.",
+        )
+    return obs_code.strip()
+
+
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
     return FileResponse(str(STATIC_DIR / "index.html"))
@@ -94,6 +105,7 @@ class JobSummary(BaseModel):
     completed_at: Optional[datetime.datetime]
     n_observations: int
     n_failed: int
+    n_rejected: int = 0
     chart_id: Optional[str]
     aavso_csv_path: Optional[str]
 
@@ -310,6 +322,7 @@ def api_run_jobs(run_id: int, db: Session = Depends(get_db)):
         obs = job.observations
         n_ok = sum(1 for o in obs if o.status == "success" and not o.rejected)
         n_fail = sum(1 for o in obs if o.status == "failed")
+        n_rejected = sum(1 for o in obs if o.status == "success" and o.rejected)
         summaries.append(JobSummary(
             id=job.id,
             object_name=job.object_name,
@@ -319,6 +332,7 @@ def api_run_jobs(run_id: int, db: Session = Depends(get_db)):
             completed_at=job.completed_at,
             n_observations=n_ok,
             n_failed=n_fail,
+            n_rejected=n_rejected,
             chart_id=job.chart_id,
             aavso_csv_path=job.aavso_csv_path,
         ))
@@ -362,10 +376,7 @@ def api_run_aavso_csv(run_id: int, db: Session = Depends(get_db)):
     all_obs = list_observations_for_run(db, run_id)
     accepted = [o for o in all_obs if o.status == "success" and not o.rejected]
 
-    # Build obs_code from first job's setting (they all share the same settings)
-    obs_code = ""
-    if run.jobs:
-        obs_code = run.jobs[0].obs_code
+    obs_code = _configured_obs_code()
 
     # Need chart_id per-job; build a lookup
     job_chart: dict[int, str] = {j.id: (j.chart_id or "") for j in run.jobs}
@@ -400,6 +411,7 @@ def api_list_jobs(limit: int = 50, db: Session = Depends(get_db)):
         obs = job.observations
         n_ok = sum(1 for o in obs if o.status == "success" and not o.rejected)
         n_fail = sum(1 for o in obs if o.status == "failed")
+        n_rejected = sum(1 for o in obs if o.status == "success" and o.rejected)
         summaries.append(
             JobSummary(
                 id=job.id,
@@ -410,6 +422,7 @@ def api_list_jobs(limit: int = 50, db: Session = Depends(get_db)):
                 completed_at=job.completed_at,
                 n_observations=n_ok,
                 n_failed=n_fail,
+                n_rejected=n_rejected,
                 chart_id=job.chart_id,
                 aavso_csv_path=job.aavso_csv_path,
             )
@@ -430,8 +443,9 @@ def api_get_job(job_id: int, db: Session = Depends(get_db)):
         status=job.status,
         created_at=job.created_at,
         completed_at=job.completed_at,
-        n_observations=sum(1 for o in obs if o.status == "success"),
+        n_observations=sum(1 for o in obs if o.status == "success" and not o.rejected),
         n_failed=sum(1 for o in obs if o.status == "failed"),
+        n_rejected=sum(1 for o in obs if o.status == "success" and o.rejected),
         chart_id=job.chart_id,
         aavso_csv_path=job.aavso_csv_path,
     )
@@ -561,7 +575,7 @@ def api_aavso_csv(job_id: int, db: Session = Depends(get_db)):
         )
         for o in obs_rows
     ]
-    return format_aavso_csv(aavso_obs, obs_code=job.obs_code)
+    return format_aavso_csv(aavso_obs, obs_code=_configured_obs_code())
 
 
 # ---------------------------------------------------------------------------
