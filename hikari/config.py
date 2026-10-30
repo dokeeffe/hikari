@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -77,7 +80,7 @@ class HikariSettings(BaseModel):
 
 def load_settings() -> HikariSettings:
     """Load settings from ./hikari.toml, using model defaults for omitted values."""
-    config_path = Path.cwd() / "hikari.toml"
+    config_path = get_config_path()
     if not config_path.is_file():
         raise FileNotFoundError(
             f"Configuration file not found: {config_path}. Run `hikari config` to create it."
@@ -85,6 +88,95 @@ def load_settings() -> HikariSettings:
     with config_path.open("rb") as config_file:
         file_data = tomllib.load(config_file)
     return HikariSettings.model_validate(_flatten_config(file_data))
+
+
+def get_config_path() -> Path:
+    """Return the configuration file used by the current Hikari process."""
+    return Path.cwd() / "hikari.toml"
+
+
+def save_settings(settings: HikariSettings) -> Path:
+    """Write validated settings to hikari.toml, replacing it atomically."""
+    content = _serialize_settings(settings)
+    config_path = get_config_path()
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=config_path.parent,
+            prefix=".hikari.",
+            suffix=".toml.tmp",
+            delete=False,
+        ) as config_file:
+            temp_path = Path(config_file.name)
+            config_file.write(content)
+            config_file.flush()
+            os.fsync(config_file.fileno())
+        os.replace(temp_path, config_path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+    return config_path
+
+
+def _serialize_settings(settings: HikariSettings) -> str:
+    """Serialize all editable settings using the documented TOML sections."""
+    values = settings.model_dump(mode="python")
+
+    def toml_string(value: str | Path) -> str:
+        return json.dumps(str(value), ensure_ascii=True)
+
+    def toml_string_list(items: list[str]) -> str:
+        return "[" + ", ".join(toml_string(item) for item in items) + "]"
+
+    lines = [
+        "# Hikari configuration file",
+        "",
+        "# AAVSO observer code (required for submission)",
+        f"obs_code = {toml_string(values['obs_code'])}",
+        f"observer_notes = {toml_string(values['observer_notes'])}",
+    ]
+    if values["cache_dir"] is not None:
+        lines.append("# Optional API cache directory")
+        lines.append(f"cache_dir = {toml_string(values['cache_dir'])}")
+    lines.extend(
+        [
+            "",
+            "[photometry]",
+            f"aperture_radius = {values['aperture_radius']}       # pixels",
+            f"sky_inner_radius = {values['sky_inner_radius']}     # pixels",
+            f"sky_outer_radius = {values['sky_outer_radius']}     # pixels",
+            f"fwhm = {values['fwhm']}                             # pixels (for source detection)",
+            f"source_snr = {values['source_snr']}                 # detection threshold (sigma)",
+            f"ensemble_size = {values['ensemble_size']}           # ensemble stars",
+            f"linear_limit = {values['linear_limit']}             # ADU linearity limit",
+            "",
+            "[comparison_stars]",
+            f"brightest_comp_star = {values['brightest_comp_star']}",
+            f"dimmest_comp_star = {values['dimmest_comp_star']}",
+            f"field_of_view = {values['field_of_view']}          # arcminutes",
+        ]
+    )
+    lines.append(f"excluded_auids = {toml_string_list(values['excluded_auids'])}")
+    lines.extend(
+        [
+            "",
+            "[output]",
+            "# Directory for generated files (CSV, plots)",
+            f"output_dir = {toml_string(values['output_dir'])}",
+            "",
+            "[database]",
+            "# SQLAlchemy database URL",
+            f"database_url = {toml_string(values['database_url'])}",
+            "",
+            "[web]",
+            "# Dashboard listening address and port",
+            f"host = {toml_string(values['web_host'])}",
+            f"port = {values['web_port']}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _flatten_config(data: dict[str, object]) -> dict[str, object]:

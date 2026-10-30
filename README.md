@@ -33,11 +33,17 @@ Hikari uses [uv](https://docs.astral.sh/uv/) for dependency management.
 # Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Clone and install
+# Clone and build the dashboard, then install Python dependencies
 git clone https://github.com/dokeeffe/hikari.git
 cd hikari
+npm ci
+npm run build
 uv sync
 ```
+
+The web dashboard source is in `hikari/web/frontend/` and uses Vite and TypeScript. Run `npm run build` after changing the frontend and before running or packaging Hikari; the compiled files are written to `hikari/web/static/` and included in the Python package.
+
+For frontend development, start the FastAPI dashboard as usual and run `npm run dev` in another terminal. Vite serves the frontend and proxies `/api` requests to `http://127.0.0.1:8765`.
 
 The `hikari` command is then available via:
 
@@ -166,7 +172,7 @@ uv run hikari dashboard
 
 ## Configuration
 
-Run `hikari config` to generate an annotated `hikari.toml` in the current directory. Hikari reads settings only from that file; edit it to change settings. If the file is missing, create it with `hikari config`.
+Run `hikari config` to generate an annotated `hikari.toml` in the current directory. In the web dashboard, select **Settings** to view and edit the values in that same file; changes are validated before saving. Settings are read from the current working directory, so launch the dashboard from the directory containing `hikari.toml`. Database URL and web host/port changes require a dashboard restart; other settings apply to the next processing run.
 
 ```toml
 obs_code = "MUY"                  # Your AAVSO observer code

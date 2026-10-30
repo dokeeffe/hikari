@@ -45,7 +45,7 @@ from hikari.output.database import (
 from hikari.output.aavso import format_aavso_csv
 from hikari.core.models import AavsoObservation, PhotometricFilter
 from hikari.core.runner import run_directory
-from hikari.config import load_settings
+from hikari.config import HikariSettings, get_config_path, load_settings, save_settings
 
 # ---------------------------------------------------------------------------
 # FastAPI app with lifespan (initialise DB on startup)
@@ -74,6 +74,28 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # Serve the SPA at /
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    """Return the active configuration values and file path."""
+    settings = load_settings()
+    return {
+        "config_path": str(get_config_path()),
+        "settings": settings.model_dump(mode="json"),
+    }
+
+
+@app.put("/api/settings")
+def api_save_settings(payload: HikariSettings):
+    """Validate and save dashboard settings to the active hikari.toml."""
+    config_path = save_settings(payload)
+    logger.info("Settings saved to {}", config_path)
+    return {
+        "status": "saved",
+        "config_path": str(config_path),
+        "settings": payload.model_dump(mode="json"),
+    }
 
 
 def _configured_obs_code() -> str:
@@ -592,7 +614,7 @@ def api_clear_all_data(db: Session = Depends(get_db)):
 @app.delete("/api/cache")
 def api_clear_cache():
     """Delete all on-disk API response caches (Simbad, AAVSO VSP)."""
-    cache_dir = _settings.resolved_cache_dir if _settings else Path.home() / ".cache" / "hikari"
+    cache_dir = load_settings().resolved_cache_dir
     deleted = 0
     if cache_dir.exists():
         for entry in cache_dir.iterdir():

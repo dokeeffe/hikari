@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from hikari.config import HikariSettings
+from hikari.config import HikariSettings, load_settings
 from hikari.web import app as web_app
 
 
@@ -12,6 +12,21 @@ def test_configured_obs_code_comes_from_config_file(monkeypatch):
     monkeypatch.setattr(web_app, "load_settings", lambda: HikariSettings(obs_code="ODEA"))
 
     assert web_app._configured_obs_code() == "ODEA"
+
+
+def test_settings_api_reads_and_saves_current_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    web_app.save_settings(HikariSettings(obs_code="OLD"))
+
+    current = web_app.api_get_settings()
+    assert current["config_path"] == str(tmp_path / "hikari.toml")
+    assert current["settings"]["obs_code"] == "OLD"
+
+    updated = web_app.api_save_settings(HikariSettings(obs_code="NEW"))
+
+    assert updated["status"] == "saved"
+    assert updated["settings"]["obs_code"] == "NEW"
+    assert load_settings().obs_code == "NEW"
 
 
 def test_job_csv_uses_configured_obs_code(monkeypatch):

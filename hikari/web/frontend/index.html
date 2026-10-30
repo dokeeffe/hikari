@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hikari – Photometry Dashboard</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+
+
+<header>
+  <h1>⭐ Hikari</h1>
+  <span>Variable Star Photometry</span>
+  <div class="header-actions">
+    <button id="runs-nav" class="primary" onclick="showRuns()">Runs</button>
+    <button id="settings-nav" onclick="showSettings()">Settings</button>
+  </div>
+</header>
+
+<main id="dashboard-main">
+  <!-- Column 1: New Run + Run list -->
+  <div class="col-runs">
+    <div class="panel" id="new-run-panel">
+      <div class="panel-header">1 · Choose FITS folder</div>
+      <div class="new-run-body">
+        <input type="text" id="path-input" aria-label="FITS folder path" placeholder="/path/to/fits/directory"
+               oninput="localStorage.setItem(lastFolderKey, this.value.trim())"
+               onkeydown="if(event.key==='Enter') startRun()" />
+        <div class="path-help" id="path-help">Choose the folder containing your FITS images. Your last folder is remembered in this browser.</div>
+        <div class="path-actions">
+          <button onclick="openDirPicker()">Browse…</button>
+          <button class="primary" onclick="startRun()" id="start-btn">Process files</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="run-list-panel">
+      <div class="panel-header">
+        Runs
+        <button class="sm" onclick="loadRuns()" style="margin-left:auto">Refresh</button>
+      </div>
+      <details class="data-tools">
+        <summary>Data management</summary>
+        <div class="data-tool-buttons">
+          <button class="sm" onclick="clearCache()">Clear cache</button>
+          <button class="sm danger" onclick="clearAllData()">Clear all runs</button>
+        </div>
+      </details>
+      <div id="run-list">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Column 2: Run detail -->
+  <div class="col-obs">
+    <div class="panel" id="detail-panel">
+      <div class="empty" style="padding:32px">
+        <h2 style="font-size:1.1rem; color:var(--text); margin-bottom:12px">Your photometry workflow</h2>
+        <p style="margin-bottom:18px">Choose a FITS folder to start a new run, or select a previous run from Runs.</p>
+        <p style="margin:8px 0"><strong>1. Process</strong> — Hikari measures the images and builds the ensemble fit.</p>
+        <p style="margin:8px 0"><strong>2. Review</strong> — inspect each fit and target cutout; reject poor observations.</p>
+        <p style="margin:8px 0"><strong>3. Export</strong> — download an AAVSO CSV containing accepted observations.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Column 3: Viz panel -->
+  <div class="col-viz">
+    <div id="viz-panel">
+      <div id="viz-panel-header">Detail</div>
+      <div id="viz-filename"></div>
+      <div id="viz-empty">Click an observation row to see the ensemble fit and target cutout</div>
+      <div id="viz-cards" class="viz-cards" style="display:none">
+        <div class="viz-card">
+          <h4>Ensemble Fit</h4>
+          <canvas id="ensemble-chart" height="220"></canvas>
+        </div>
+        <div class="viz-card">
+          <h4>Target Cutout</h4>
+          <div id="cutout-wrap">
+            <span id="cutout-placeholder" class="muted">Loading…</span>
+            <img id="cutout-img" style="display:none" alt="target cutout" />
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<section id="settings-page" style="display:none">
+  <div id="settings-panel" class="panel">
+    <div class="panel-header">Hikari settings</div>
+    <div id="settings-content"><div class="empty"><span class="spinner"></span></div></div>
+  </div>
+</section>
+
+<!-- Directory picker modal -->
+<div id="dir-modal-backdrop">
+  <div id="dir-modal">
+    <div id="dir-modal-header">
+      <span class="title">Select Directory</span>
+      <button class="sm" onclick="closeDirPicker()">✕</button>
+    </div>
+    <div id="dir-modal-path"></div>
+    <div id="dir-entries"></div>
+    <div id="dir-modal-footer">
+      <button onclick="closeDirPicker()">Cancel</button>
+      <button class="primary" onclick="confirmDirPicker()" id="dir-select-btn">Select This Directory</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
